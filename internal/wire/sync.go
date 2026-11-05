@@ -141,15 +141,22 @@ func (s ProxyState) Valid() bool {
 // send one immediately after every apply attempt (success or rejection) and
 // otherwise every StatusInterval. Metadata only (I4).
 type StatusReport struct {
-	Tenant         ID          `json:"tenant"`
-	ProxyID        ID          `json:"proxy_id"`
-	Seq            uint64      `json:"seq"` // +1 per report within one process; resets on restart
-	State          ProxyState  `json:"state"`
-	AppliedVersion uint64      `json:"applied_version"`       // 0 = no policy
-	PolicyHash     Hash        `json:"policy_hash,omitempty"` // set iff AppliedVersion > 0
-	LastError      *ApplyError `json:"last_error,omitempty"`
-	UptimeSeconds  uint64      `json:"uptime_seconds"` // a decrease means the proxy restarted
-	Counters       Counters    `json:"counters"`
+	Tenant         ID         `json:"tenant"`
+	ProxyID        ID         `json:"proxy_id"`
+	Seq            uint64     `json:"seq"` // +1 per report within one process; resets on restart
+	State          ProxyState `json:"state"`
+	AppliedVersion uint64     `json:"applied_version"`       // 0 = no policy
+	PolicyHash     Hash       `json:"policy_hash,omitempty"` // set iff AppliedVersion > 0
+	// Apply-log anchor (M-D35). LogSeq is the Seq of the last apply-log
+	// entry, counting from 1 (so it equals the number of entries); LogHead
+	// is that entry's Self hash. Both are 0/"" iff the log is empty. The
+	// control plane stores them so evidence can flag a seq or head
+	// regression (tail truncation, I6).
+	LogSeq        uint64      `json:"log_seq"`
+	LogHead       Hash        `json:"log_head,omitempty"`
+	LastError     *ApplyError `json:"last_error,omitempty"`
+	UptimeSeconds uint64      `json:"uptime_seconds"` // a decrease means the proxy restarted
+	Counters      Counters    `json:"counters"`
 }
 
 // ApplyError is the latest rejected or failed apply. Codes only, no text.
@@ -175,6 +182,10 @@ func (s StatusReport) Validate() error {
 		return fmt.Errorf("%w: applied_version and policy_hash go together", ErrInvalid)
 	case s.PolicyHash != "" && !s.PolicyHash.Valid():
 		return fmt.Errorf("%w: policy_hash", ErrInvalid)
+	case (s.LogSeq == 0) != (s.LogHead == ""):
+		return fmt.Errorf("%w: log_seq and log_head go together", ErrInvalid)
+	case s.LogHead != "" && !s.LogHead.Valid():
+		return fmt.Errorf("%w: log_head", ErrInvalid)
 	case (s.State == StateEnforcing || s.State == StateSafeMode) && s.AppliedVersion == 0:
 		return fmt.Errorf("%w: %s needs a policy", ErrInvalid, s.State)
 	case (s.State == StateDenyAll || s.State == StateTampered) && s.AppliedVersion != 0:

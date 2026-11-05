@@ -1,6 +1,6 @@
 # Kairan (回覧): Product Requirements
 
-Source: `docs/superpowers/specs/2026-11-05-kairan-design.md` (approved 2026-11-05). If this file and the source disagree, stop and file an `incident`.
+Source: Aro's approved design of 2026-11-05 (not in this repository). This PRD is the top source of truth. If this file and the source disagree, stop and file an `incident`.
 Independent project; not affiliated with RAYVEN. Anything about Tumiki comes from public pages and is marked *(assumption)* where guessed.
 
 ## 1. Problem
@@ -48,7 +48,7 @@ No Tumiki clone (no PII masking, virtual-MCP builder, connectors). Not a full MC
 | ID | Requirement |
 |---|---|
 | J1 | Heartbeats/acks carry only versions, hashes, health, counters. User IDs, if any, are HMAC'd. A canary-secret test proves no leak. |
-| J2 | Proxies make **outbound HTTPS only**; HTTP/1.1 long-poll; honor `HTTPS_PROXY`. No inbound ports. |
+| J2 | Proxies make **outbound HTTPS only**; HTTP/1.1 long-poll; honor `HTTPS_PROXY`. No inbound connections from outside the customer network (the proxy's MCP and metrics listeners are inbound inside it; M-D36). |
 | J3 | **Offline mode:** a signed bundle can be imported from a file and passes the same signature, version and expiry checks. |
 | J4 | **2-of-N signatures**; approver signs on their own machine; the control plane distributes but cannot create a valid policy. |
 | J5 | Local **hash-chained apply log**; each decision stamped with policy version + hash; export shows "proxy P enforced version V (hash H) from T1 to T2" in JST + UTC. |
@@ -77,23 +77,23 @@ No Tumiki clone (no PII masking, virtual-MCP builder, connectors). Not a full MC
 | I3 | No failure (control plane down, network cut, bad policy, disk error) ever makes permissions wider |
 | I4 | No payload, prompt or canary secret ever reaches the control plane |
 | I5 | Every allow/deny decision is recorded with the exact policy version and hash that made it |
-| I6 | The apply log's hash chain detects any edit, deletion or reordering |
+| I6 | The apply log's hash chain detects any edit, deletion or reordering; tail truncation is detected by comparison with the control-plane anchor (`log_seq`, `log_head`) (M-D36) |
 
 ## 9. Metrics (all produced by `make bench` into RESULTS.md: commit, machine, >= 5 runs, median and spread; real and simulated labeled separately)
 | # | Metric | Measured by | Target |
 |---|---|---|---|
-| M1 | Propagation time p50/p95/p99 | publish timestamp vs each ack; 10 real (Docker), 100 / 1,000 simulated | TODO(Phase 0): numeric target (design says hypotheses, report honestly). Proposal: M-D6 |
-| M2 | Dead-proxy detection time | kill a container, time to stale/lost | TODO(Phase 0): numeric target. Proposal: M-D6 |
-| M3 | Catch-up after network cut | disconnect, publish, reconnect, time to ack | TODO(Phase 0): numeric target. Proposal: M-D6 |
-| M4 | Enforcement overhead | Go benchmarks (ns, allocs) and e2e latency with/without proxy | TODO(Phase 0): numeric target. Proposal: M-D6 |
+| M1 | Propagation time p50/p95/p99 | publish timestamp vs each ack; 10 real (Docker), 100 / 1,000 simulated | p99 <= 1s per stage with 10 real proxies, <= 3s with 1,000 simulated, excluding canary dwell (M-D16) |
+| M2 | Dead-proxy detection time | kill a container, time to stale/lost | stale <= 41s, lost <= 131s after kill (M-D16) |
+| M3 | Catch-up after network cut | disconnect, publish, reconnect, time to ack | catch-up p99 <= 6s after reconnect (M-D16) |
+| M4 | Enforcement overhead | Go benchmarks (ns, allocs) and e2e latency with/without proxy | decide <= 1us/op median, 0 allocs on 1,000 rules; tools/call added p99 <= 2ms localhost (M-D16) |
 | M5 | Outage correctness | thousands of mixed calls during control-plane outage | **0 wrongly allowed** |
 | M6 | Bad-policy rejection | unsigned, 1 sig, old version, wrong tenant, expired, corrupted | **0 applied** |
-| M7 | Control-plane cost | memory, CPU, connections per 1,000 watching proxies (kairan-sim) | TODO(Phase 0): numeric target. Proposal: M-D6 |
+| M7 | Control-plane cost | memory, CPU, connections per 1,000 watching proxies (kairan-sim) | 1,000 simulated proxies <= 150 MB RSS and <= 0.5 core over 60s (M-D16) |
 | M8 | Data leakage | canary secrets seen in captured control-plane traffic | **0 hits** |
 
 ## 10. Acceptance criteria (definition of done)
 1. Invariants I1-I6 each have passing tests (unit, fuzz where applicable, `-race`).
-2. Chaos S1-S10 pass automatically (see ARCHITECTURE.md / design §10.3); S11 (k3d) is a stretch.
+2. Chaos S1-S8, S10 and S12 pass automatically (defined in ARCHITECTURE.md §11); S9 (`HTTPS_PROXY`) and S13 (reconnect storm) are optional; S11 (k3d) is a stretch.
 3. `make ci` green on main: vet, staticcheck, `test -race`, fuzz smoke, JSONL checks, govulncheck.
 4. RESULTS.md generated from a clean checkout by `make bench`; M5, M6, M8 meet their targets; other results reported honestly.
 5. Go stdlib only, unless a decision entry justifies an addition.
