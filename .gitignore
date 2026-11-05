@@ -15,3 +15,10 @@ bench/*.tmp
 *.key
 !test/fixtures/TEST-ONLY-*
 .break-bin/
+
+# go build ./cmd/<name> output in a worktree root
+/kairanctl
+/kairan-cp
+/kairan-proxy
+/fakemcp
+/kairan-sim
