@@ -51,6 +51,7 @@ type rolloutFile struct {
 	Reason   wire.ErrorCode    `json:"reason,omitempty"`
 	DwellNs  int64             `json:"dwell_ns"`
 	CanaryOK time.Time         `json:"canary_ok,omitzero"`
+	Promoted bool              `json:"promoted,omitempty"`
 }
 
 // tlRec is a timeline entry plus the apply-log anchor of the latest report
@@ -227,7 +228,7 @@ func (f *files) loadRollouts() error {
 			return err
 		}
 		r := rollout.Rollout{Tenant: rec.Tenant, Version: rec.Version, Previous: rec.Previous,
-			Phase: rec.Phase, Reason: rec.Reason, Dwell: time.Duration(rec.DwellNs), CanaryOK: rec.CanaryOK}
+			Phase: rec.Phase, Reason: rec.Reason, Dwell: time.Duration(rec.DwellNs), CanaryOK: rec.CanaryOK, Promoted: rec.Promoted}
 		if rec.Tenant != tn || checkRollout(r) != nil {
 			return corrupt(rel)
 		}
@@ -414,7 +415,7 @@ func (f *files) PutRollout(r rollout.Rollout) error {
 		return err
 	}
 	b, err := json.Marshal(rolloutFile{Tenant: r.Tenant, Version: r.Version, Previous: r.Previous,
-		Phase: r.Phase, Reason: r.Reason, DwellNs: int64(r.Dwell), CanaryOK: r.CanaryOK.UTC()})
+		Phase: r.Phase, Reason: r.Reason, DwellNs: int64(r.Dwell), CanaryOK: r.CanaryOK.UTC(), Promoted: r.Promoted})
 	if err != nil {
 		return fmt.Errorf("store: encode rollout: %w", err)
 	}

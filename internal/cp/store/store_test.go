@@ -175,7 +175,7 @@ func TestRolloutRoundTrip(t *testing.T) {
 	r1 := rollout.Rollout{Tenant: "acme", Version: 8, Previous: 7, Phase: wire.PhaseCanary,
 		Dwell: 1500 * time.Millisecond, CanaryOK: t0.Add(123456789 * time.Nanosecond)}
 	r2 := rollout.Rollout{Tenant: "acme", Version: 9, Previous: 8, Phase: wire.PhaseHalted,
-		Reason: wire.ErrCanaryLost, Dwell: time.Minute}
+		Reason: wire.ErrCanaryLost, Dwell: time.Minute, Promoted: true}
 	for _, r := range []rollout.Rollout{r1, r2} { // second replaces first
 		if err := s.PutRollout(r); err != nil {
 			t.Fatal(err)
