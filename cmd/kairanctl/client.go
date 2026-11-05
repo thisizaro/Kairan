@@ -11,7 +11,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -132,15 +131,14 @@ func adminToken(s streams, file string) (string, *cliError) {
 	var tok string
 	switch {
 	case file != "":
-		f, err := os.Open(file)
+		f, st, err := openRegular(file)
+		if errors.Is(err, errNotRegular) {
+			return "", fail("the token file is not a regular file", "トークンファイルが通常のファイルではありません")
+		}
 		if err != nil {
 			return "", fail("cannot open the token file: "+reason(err), "トークンファイルを開けません: "+reasonJa(err))
 		}
 		defer f.Close()
-		st, err := f.Stat()
-		if err != nil || !st.Mode().IsRegular() {
-			return "", fail("the token file is not a regular file", "トークンファイルが通常のファイルではありません")
-		}
 		if st.Mode().Perm()&0o077 != 0 {
 			return "", fail("token file permissions are too open; run: chmod 600 <token file>",
 				"トークンファイルの権限が緩すぎます。chmod 600 <トークンファイル> を実行してください")
