@@ -20,9 +20,9 @@
 //
 // CONN is: -url https://cp.example [-ca-file ca.pem] [-allow-plaintext]
 // [-token-file FILE]. The admin token is read from the environment variable
-// KAIRAN_ADMIN_TOKEN or from a file (-token-file, or KAIRAN_ADMIN_TOKEN_FILE),
+// KCTL_ADMIN_TOKEN or from a file (-token-file, or KCTL_ADMIN_TOKEN_FILE),
 // never from a flag, because flags show in the process list. The URL may
-// also come from KAIRAN_CP_URL.
+// also come from KCTL_CP_URL.
 //
 // Exit codes: 0 success, 1 the command was refused or failed, 2 bad usage.
 // Errors are printed in English and Japanese (PRD J7).
@@ -73,9 +73,9 @@ const (
   kairanctl evidence export CONN -tenant ID [-proxy ID] [-out FILE]
 
   CONN: -url https://cp.example [-ca-file ca.pem] [-allow-plaintext] [-token-file FILE]
-  The admin token comes from KAIRAN_ADMIN_TOKEN or a token file
-  (-token-file or KAIRAN_ADMIN_TOKEN_FILE), never from a flag.
-  The URL may come from KAIRAN_CP_URL.
+  The admin token comes from KCTL_ADMIN_TOKEN or a token file
+  (-token-file or KCTL_ADMIN_TOKEN_FILE), never from a flag.
+  The URL may come from KCTL_CP_URL.
 `
 )
 
