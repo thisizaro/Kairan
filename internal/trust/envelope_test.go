@@ -162,6 +162,19 @@ func TestDecodeEnvelope(t *testing.T) {
 		{"empty", nil, wire.ErrBodyInvalid},
 		{"too large", big, wire.ErrBodyTooLarge},
 		{"bad base64", []byte(`{"payloadType":"x","payload":"!!","signatures":[]}`), wire.ErrBodyInvalid},
+		{"duplicate payload", []byte(`{"payloadType":"x","payload":"AA==","payload":"AQ==","signatures":[]}`), wire.ErrBodyInvalid},
+		{"duplicate payloadType", []byte(`{"payloadType":"x","payloadType":"y","payload":"AA==","signatures":[]}`), wire.ErrBodyInvalid},
+		{"duplicate signatures", []byte(`{"payloadType":"x","payload":"AA==","signatures":[],"signatures":[]}`), wire.ErrBodyInvalid},
+		{"case variant payload", []byte(`{"payloadType":"x","Payload":"AA==","signatures":[]}`), wire.ErrBodyInvalid},
+		{"upper case payloadType", []byte(`{"PAYLOADTYPE":"x","payload":"AA==","signatures":[]}`), wire.ErrBodyInvalid},
+		{"case variant and exact", []byte(`{"payloadType":"x","payload":"AA==","PAYLOAD":"AQ==","signatures":[]}`), wire.ErrBodyInvalid},
+		{"case variant signatures", []byte(`{"payloadType":"x","payload":"AA==","Signatures":[]}`), wire.ErrBodyInvalid},
+		{"duplicate keyid", []byte(`{"payloadType":"x","payload":"AA==","signatures":[{"keyid":"a","keyid":"b","sig":""}]}`), wire.ErrBodyInvalid},
+		{"duplicate sig", []byte(`{"payloadType":"x","payload":"AA==","signatures":[{"keyid":"a","sig":"","sig":""}]}`), wire.ErrBodyInvalid},
+		{"case variant keyid", []byte(`{"payloadType":"x","payload":"AA==","signatures":[{"KeyID":"a","sig":""}]}`), wire.ErrBodyInvalid},
+		{"case variant sig", []byte(`{"payloadType":"x","payload":"AA==","signatures":[{"keyid":"a","SIG":""}]}`), wire.ErrBodyInvalid},
+		{"escaped duplicate", []byte(`{"payloadType":"x","payload":"AA==","\u0070ayload":"AQ==","signatures":[]}`), wire.ErrBodyInvalid},
+		{"same key in two signatures is fine", []byte(`{"payloadType":"x","payload":"AA==","signatures":[{"keyid":"a","sig":""},{"keyid":"a","sig":""}]}`), nil},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -169,7 +182,10 @@ func TestDecodeEnvelope(t *testing.T) {
 			if !errors.Is(err, tc.err) && !(tc.err == nil && err == nil) {
 				t.Fatalf("err = %v, want %v", err, tc.err)
 			}
-			if err == nil && !bytes.Equal(got.Payload, env.Payload) {
+			if tc.err != nil && err != tc.err {
+				t.Fatalf("err = %v, want the bare sentinel %v", err, tc.err)
+			}
+			if err == nil && tc.name == "ok" && !bytes.Equal(got.Payload, env.Payload) {
 				t.Fatal("payload changed")
 			}
 		})
@@ -186,6 +202,10 @@ func FuzzDecodeEnvelope(f *testing.F) {
 	f.Add([]byte(`{}`))
 	f.Add([]byte(`{"payloadType":"x","payload":"AA==","signatures":[{"keyid":"","sig":""}]}`))
 	f.Add(append(append([]byte{}, good...), 'x'))
+	f.Add([]byte(`{"payloadType":"x","payload":"AA==","payload":"AQ==","signatures":[]}`))
+	f.Add([]byte(`{"payloadType":"x","Payload":"AA==","signatures":[]}`))
+	f.Add([]byte(`{"payloadType":"x","payload":"AA==","signatures":[{"keyid":"a","keyid":"b","sig":""}]}`))
+	f.Add([]byte(`{"payloadType":"x","payload":"AA==","signatures":[{"keyid":"a","SIG":""}]}`))
 	keys := map[wire.Hash]ed25519.PublicKey{KeyID(pub(a)): pub(a), KeyID(pub(b)): pub(b)}
 
 	f.Fuzz(func(t *testing.T, data []byte) {
