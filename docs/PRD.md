@@ -82,13 +82,13 @@ No Tumiki clone (no PII masking, virtual-MCP builder, connectors). Not a full MC
 ## 9. Metrics (all produced by `make bench` into RESULTS.md: commit, machine, >= 5 runs, median and spread; real and simulated labeled separately)
 | # | Metric | Measured by | Target |
 |---|---|---|---|
-| M1 | Propagation time p50/p95/p99 | publish timestamp vs each ack; 10 real (Docker), 100 / 1,000 simulated | TODO(Phase 0): numeric target (design says hypotheses, report honestly). Proposal: M-D6 |
-| M2 | Dead-proxy detection time | kill a container, time to stale/lost | TODO(Phase 0): numeric target. Proposal: M-D6 |
-| M3 | Catch-up after network cut | disconnect, publish, reconnect, time to ack | TODO(Phase 0): numeric target. Proposal: M-D6 |
-| M4 | Enforcement overhead | Go benchmarks (ns, allocs) and e2e latency with/without proxy | TODO(Phase 0): numeric target. Proposal: M-D6 |
+| M1 | Propagation time p50/p95/p99 | publish timestamp vs each ack; 10 real (Docker), 100 / 1,000 simulated | p99 <= 1s per stage with 10 real proxies, <= 3s with 1,000 simulated, excluding canary dwell (M-D16) |
+| M2 | Dead-proxy detection time | kill a container, time to stale/lost | stale <= 41s, lost <= 131s after kill (M-D16) |
+| M3 | Catch-up after network cut | disconnect, publish, reconnect, time to ack | catch-up p99 <= 6s after reconnect (M-D16) |
+| M4 | Enforcement overhead | Go benchmarks (ns, allocs) and e2e latency with/without proxy | decide <= 1us/op median, 0 allocs on 1,000 rules; tools/call added p99 <= 2ms localhost (M-D16) |
 | M5 | Outage correctness | thousands of mixed calls during control-plane outage | **0 wrongly allowed** |
 | M6 | Bad-policy rejection | unsigned, 1 sig, old version, wrong tenant, expired, corrupted | **0 applied** |
-| M7 | Control-plane cost | memory, CPU, connections per 1,000 watching proxies (kairan-sim) | TODO(Phase 0): numeric target. Proposal: M-D6 |
+| M7 | Control-plane cost | memory, CPU, connections per 1,000 watching proxies (kairan-sim) | 1,000 simulated proxies <= 150 MB RSS and <= 0.5 core over 60s (M-D16) |
 | M8 | Data leakage | canary secrets seen in captured control-plane traffic | **0 hits** |
 
 ## 10. Acceptance criteria (definition of done)
