@@ -47,6 +47,11 @@
 //
 // # Poll loop
 //
+// The 200 body is decoded strictly, by the same rule as trust.DecodeEnvelope:
+// the top-level keys are exactly "version" and "envelope", each once, spelled
+// exactly (a duplicate or a variant such as "Envelope" is a rejected answer,
+// counted and followed by a backoff, malformed_request in last_error).
+//
 // GET /v1/poll?tenant&proxy&have with the bearer token. The client deadline is
 // wire.PollClientTimeout (45s, M-D40). 200 is applied; 304 polls again at once
 // unless it came back faster than wire.RetryBackoffMin (a displaced poll or a
