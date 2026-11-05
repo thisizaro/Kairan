@@ -49,18 +49,19 @@ func getTimeline(t *testing.T, e *env, tenant string) (wire.TimelineView, map[st
 	return tv, raw
 }
 
-// droppedIn finds the dropped-count key (any top-level key containing "dropped") in the raw timeline
-// response. wire.TimelineView has no such field yet; the ruling says the response reports it.
-func droppedIn(raw map[string]json.RawMessage) (int, bool) {
-	for k, v := range raw {
-		if strings.Contains(strings.ToLower(k), "dropped") {
-			n, err := strconv.Atoi(strings.TrimSpace(string(v)))
-			if err == nil {
-				return n, true
-			}
-		}
+// droppedIn reads the per-proxy dropped counts the timeline response reports (M-D56:
+// wire.TimelineView.Dropped, map[ID]uint64 `json:"dropped,omitempty"`, omitted when nothing was dropped).
+// It decodes the raw key so this file compiles with or without the wire field in the checkout.
+func droppedIn(raw map[string]json.RawMessage) (map[string]uint64, bool) {
+	v, ok := raw["dropped"]
+	if !ok {
+		return nil, false
 	}
-	return 0, false
+	var m map[string]uint64
+	if err := json.Unmarshal(v, &m); err != nil {
+		return nil, false
+	}
+	return m, true
 }
 
 func countFor(tv wire.TimelineView, proxy string) int {
@@ -103,9 +104,9 @@ func TestTimelineGrowthIsBounded(t *testing.T) {
 	}
 	want := posts - timelineCap
 	if d, ok := droppedIn(raw); !ok {
-		t.Errorf("timeline response has no dropped count (keys: %v); Q-D21 requires it", keysOf(raw))
-	} else if d != want {
-		t.Errorf("timeline dropped count %d, want %d", d, want)
+		t.Errorf("timeline response has no dropped map (keys: %v); Q-D21 and M-D56 require it", keysOf(raw))
+	} else if d["p1"] != uint64(want) {
+		t.Errorf("timeline dropped[p1] = %d, want %d (map %v)", d["p1"], want, d)
 	}
 	m := e.metricsText()
 	if !metricHasValue(m, "kairan_cp_timeline_dropped_total", `tenant="bank-a"`, want) {
@@ -121,8 +122,8 @@ func TestTimelineAtCapDropsNothing(t *testing.T) {
 	if got := countFor(tv, "p1"); got != timelineCap {
 		t.Fatalf("p1 has %d entries, want %d (nothing dropped at the cap)", got, timelineCap)
 	}
-	if d, ok := droppedIn(raw); ok && d != 0 {
-		t.Errorf("dropped count %d at exactly the cap, want 0", d)
+	if d, ok := droppedIn(raw); ok && d["p1"] != 0 {
+		t.Errorf("dropped[p1] = %d at exactly the cap, want 0 (omitted)", d["p1"])
 	}
 	for _, ln := range strings.Split(e.metricsText(), "\n") {
 		if strings.HasPrefix(ln, "kairan_cp_timeline_dropped_total{") && !strings.HasSuffix(strings.TrimSpace(ln), " 0") {
