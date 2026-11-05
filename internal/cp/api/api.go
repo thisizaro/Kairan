@@ -14,9 +14,9 @@
 //     proxy: a duplicate key or a key spelled in another case is 400 too (Q-D20).
 //   - A proxy's timeline is capped at store.MaxTimeline entries; each entry
 //     dropped adds to kairan_cp_timeline_dropped_total{tenant} (Q-D21). The
-//     per-proxy dropped counts are in the store (store.DropReporter) but are
-//     not yet in the timeline response: that needs a field in wire.TimelineView
-//     (change-request logged).
+//     timeline response carries the per-proxy counts in
+//     wire.TimelineView.Dropped (proxy ID -> entries dropped; left out when
+//     none), so evidence export can say "N earlier entries dropped".
 //   - Errors are wire.ErrorResponse codes and nothing else; input is never
 //     echoed. Logs and metrics carry validated IDs only.
 //   - A proxy's group and tenant come from the enrollment registry, never from
@@ -692,7 +692,18 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 	if entries == nil {
 		entries = []wire.TimelineEntry{}
 	}
-	writeJSON(w, wire.TimelineView{Tenant: t, Entries: entries})
+	view := wire.TimelineView{Tenant: t, Entries: entries}
+	if dr, ok := s.st.(store.DropReporter); ok {
+		d, err := dr.TimelineDropped(t)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, wire.ErrInternal)
+			return
+		}
+		if len(d) > 0 { // omitted when nothing was dropped
+			view.Dropped = d
+		}
+	}
+	writeJSON(w, view)
 }
 
 // ---- status ----

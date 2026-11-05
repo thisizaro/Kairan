@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -1048,5 +1049,33 @@ func TestTimelineDropsAreCounted(t *testing.T) {
 	d, err := e.st.(store.DropReporter).TimelineDropped(tenant)
 	if err != nil || d["p-main1"] != extra {
 		t.Fatalf("dropped = %v, err %v", d, err)
+	}
+}
+
+// Q-D21 / M-D56: the timeline response reports, per proxy, how many earlier
+// entries were dropped, and leaves the field out when none were.
+func TestTimelineResponseReportsDropped(t *testing.T) {
+	e := newEnv(t)
+	e.mustReport("p-main2", 0)
+	rec := e.do("GET", wire.PathTimeline+"?tenant="+string(tenant), adminTok, nil)
+	if rec.Code != 200 || strings.Contains(rec.Body.String(), `"dropped"`) {
+		t.Fatalf("nothing dropped, but: %d %s", rec.Code, rec.Body)
+	}
+	const extra = 3
+	for i := 0; i < store.MaxTimeline+extra; i++ {
+		seq := uint64(1000 - i)
+		e.mustReport("p-main1", 0, func(r *wire.StatusReport) { r.LogSeq = seq })
+	}
+	rec = e.do("GET", wire.PathTimeline+"?tenant="+string(tenant), adminTok, nil)
+	var tv wire.TimelineView
+	if err := json.Unmarshal(rec.Body.Bytes(), &tv); err != nil {
+		t.Fatal(err)
+	}
+	if want := map[wire.ID]uint64{"p-main1": extra}; !reflect.DeepEqual(tv.Dropped, want) {
+		t.Fatalf("dropped = %v, want %v", tv.Dropped, want)
+	}
+	rec = e.do("GET", wire.PathTimeline+"?tenant=beta", adminTok, nil)
+	if strings.Contains(rec.Body.String(), `"dropped"`) {
+		t.Fatalf("other tenant: %s", rec.Body)
 	}
 }
