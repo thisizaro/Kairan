@@ -481,8 +481,13 @@ func TestDefaultsFollowWireAndMD31(t *testing.T) {
 	if c.StatusTimeout != 10*time.Second {
 		t.Fatalf("status timeout %v", c.StatusTimeout)
 	}
-	if c.PollTimeout() != c.PollHold+10*time.Second {
-		t.Fatalf("poll timeout %v", c.PollTimeout())
+	if c.PollTimeout() != wire.PollClientTimeout || c.PollTimeout() != 45*time.Second {
+		t.Fatalf("poll timeout %v, want wire.PollClientTimeout (45s, M-D40)", c.PollTimeout())
+	}
+	// Independent of the configured hold (tests use short holds).
+	short := Config{PollHold: 200 * time.Millisecond}
+	if short.PollTimeout() != wire.PollClientTimeout {
+		t.Fatalf("poll timeout depends on hold: %v", short.PollTimeout())
 	}
 }
 

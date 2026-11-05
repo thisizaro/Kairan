@@ -27,7 +27,6 @@ const (
 
 	maxProxies     = 1_000_000
 	statusTimeout  = 10 * time.Second // M-D31: agent status POST timeout
-	pollSlack      = 10 * time.Second // M-D31: poll client timeout = poll hold + 10s
 	maxRetryAfter  = 60 * time.Second
 	pollBodyLimit  = wire.MaxEnvelopeBytes + 4<<10
 	defaultPattern = "sim-token-{n}"
@@ -51,8 +50,8 @@ type Config struct {
 	Client *http.Client // optional; tests only
 }
 
-// PollTimeout is the per-poll client timeout: poll hold + 10s (M-D31).
-func (c Config) PollTimeout() time.Duration { return c.PollHold + pollSlack }
+// PollTimeout is the per-poll client timeout: wire.PollClientTimeout, 45s (M-D40).
+func (c Config) PollTimeout() time.Duration { return wire.PollClientTimeout }
 
 func proxyIDs(n int) []wire.ID {
 	ids := make([]wire.ID, n)
