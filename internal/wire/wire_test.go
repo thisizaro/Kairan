@@ -32,13 +32,13 @@ func TestGoldenJSON(t *testing.T) {
 			`{"version":8,"envelope":{"payloadType":"application/vnd.kairan.policy+json","payload":"eA==","signatures":[]}}`},
 		{"StatusReport", StatusReport{
 			Tenant: "bank-a", ProxyID: "bank-a-p1", Seq: 3, State: StateEnforcing,
-			AppliedVersion: 8, PolicyHash: hashB,
+			AppliedVersion: 8, PolicyHash: hashB, LogSeq: 12, LogHead: hashA,
 			LastError:     &ApplyError{Code: ErrNotNewer, Version: 7},
 			UptimeSeconds: 120,
 			Counters:      Counters{CallsAllowed: 10, CallsDenied: 2, EnvelopesRejected: 1},
-		}, `{"tenant":"bank-a","proxy_id":"bank-a-p1","seq":3,"state":"enforcing","applied_version":8,"policy_hash":"` + hashB + `","last_error":{"code":"version_not_newer","version":7},"uptime_seconds":120,"counters":{"calls_allowed":10,"calls_denied":2,"envelopes_rejected":1}}`},
+		}, `{"tenant":"bank-a","proxy_id":"bank-a-p1","seq":3,"state":"enforcing","applied_version":8,"policy_hash":"` + hashB + `","log_seq":12,"log_head":"` + hashA + `","last_error":{"code":"version_not_newer","version":7},"uptime_seconds":120,"counters":{"calls_allowed":10,"calls_denied":2,"envelopes_rejected":1}}`},
 		{"StatusReport/empty", StatusReport{Tenant: "t", ProxyID: "p", State: StateDenyAll},
-			`{"tenant":"t","proxy_id":"p","seq":0,"state":"deny_all","applied_version":0,"uptime_seconds":0,"counters":{"calls_allowed":0,"calls_denied":0,"envelopes_rejected":0}}`},
+			`{"tenant":"t","proxy_id":"p","seq":0,"state":"deny_all","applied_version":0,"log_seq":0,"uptime_seconds":0,"counters":{"calls_allowed":0,"calls_denied":0,"envelopes_rejected":0}}`},
 		{"PublishResponse", PublishResponse{Tenant: "bank-a", Version: 8, PolicyHash: hashA},
 			`{"tenant":"bank-a","version":8,"policy_hash":"` + hashA + `"}`},
 		{"RolloutRequest", RolloutRequest{Tenant: "bank-a", Version: 8, CanaryDwellSeconds: 60},
@@ -53,6 +53,7 @@ func TestGoldenJSON(t *testing.T) {
 			ProxyID: "bank-a-p1", Version: 7, PolicyHash: hashA, FirstSeenUnixMs: 1, LastSeenUnixMs: 2,
 		}}}, `{"tenant":"bank-a","entries":[{"proxy_id":"bank-a-p1","version":7,"policy_hash":"` + hashA + `","first_seen_unix_ms":1,"last_seen_unix_ms":2}]}`},
 		{"ErrorResponse", ErrorResponse{Code: ErrUnauthorized}, `{"code":"unauthorized"}`},
+		{"ApplyError/clock_untrusted", ApplyError{Code: ErrClockUntrusted}, `{"code":"clock_untrusted"}`},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -93,6 +94,48 @@ func TestDecodeStrict(t *testing.T) {
 	}
 }
 
+// Every error code, with its frozen spelling. A new code must be added here
+// and to ErrorCode.Valid.
+func TestErrorCodes(t *testing.T) {
+	want := map[ErrorCode]string{
+		ErrBadRequest:       "bad_request",
+		ErrUnauthorized:     "unauthorized",
+		ErrForbidden:        "forbidden",
+		ErrNotFound:         "not_found",
+		ErrMethodNotAllowed: "method_not_allowed", // M-D31
+		ErrConflict:         "conflict",
+		ErrTooLarge:         "too_large",
+		ErrInternal:         "internal",
+		ErrUnavailable:      "unavailable", // M-D31
+		ErrMalformed:        "malformed",
+		ErrPayloadType:      "payload_type",
+		ErrThreshold:        "threshold_not_met",
+		ErrWrongTenant:      "wrong_tenant",
+		ErrNotNewer:         "version_not_newer",
+		ErrExpired:          "expired",
+		ErrPersist:          "persist_failed",
+		ErrTampered:         "tampered",
+		ErrCanaryLost:       "canary_lost",
+		ErrClockUntrusted:   "clock_untrusted", // M-D30
+	}
+	if len(want) != 19 {
+		t.Fatalf("duplicate code in table: %d entries", len(want))
+	}
+	for c, s := range want {
+		if string(c) != s {
+			t.Errorf("code %q, want %q", c, s)
+		}
+		if !c.Valid() {
+			t.Errorf("code %q not Valid", c)
+		}
+	}
+	for _, c := range []ErrorCode{"", "Unavailable", "service_unavailable", "clock-untrusted"} {
+		if c.Valid() {
+			t.Errorf("code %q should be invalid", c)
+		}
+	}
+}
+
 func TestIDValid(t *testing.T) {
 	good := []ID{"a", "bank-a", "p1", "0x", ID(strings.Repeat("a", 63))}
 	bad := []ID{"", "-a", "A", "bank_a", "bank a", "a/b", "日本", ID(strings.Repeat("a", 64))}
@@ -120,7 +163,7 @@ func TestHashValid(t *testing.T) {
 }
 
 func validStatus() StatusReport {
-	return StatusReport{Tenant: "bank-a", ProxyID: "bank-a-p1", Seq: 1, State: StateEnforcing, AppliedVersion: 3, PolicyHash: hashA}
+	return StatusReport{Tenant: "bank-a", ProxyID: "bank-a-p1", Seq: 1, State: StateEnforcing, AppliedVersion: 3, PolicyHash: hashA, LogSeq: 4, LogHead: hashB}
 }
 
 func TestStatusValidate(t *testing.T) {
@@ -140,6 +183,15 @@ func TestStatusValidate(t *testing.T) {
 		{"enforcing without policy", func(s *StatusReport) { s.AppliedVersion, s.PolicyHash = 0, "" }, false},
 		{"unknown error code", func(s *StatusReport) { s.LastError = &ApplyError{Code: "oops"} }, false},
 		{"known error code", func(s *StatusReport) { s.LastError = &ApplyError{Code: ErrExpired, Version: 4} }, true},
+		{"clock untrusted", func(s *StatusReport) { s.LastError = &ApplyError{Code: ErrClockUntrusted} }, true},
+		{"empty apply log", func(s *StatusReport) { s.LogSeq, s.LogHead = 0, "" }, true},
+		{"log seq without head", func(s *StatusReport) { s.LogHead = "" }, false},
+		{"log head without seq", func(s *StatusReport) { s.LogSeq = 0 }, false},
+		{"bad log head", func(s *StatusReport) { s.LogHead = Hash(strings.ToUpper(hashB)) }, false},
+		{"log ahead of nothing applied", func(s *StatusReport) {
+			// rejections are logged too, so a log can exist with no policy
+			s.State, s.AppliedVersion, s.PolicyHash = StateDenyAll, 0, ""
+		}, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -251,6 +303,23 @@ func TestStatusReportCannotCarryPayload(t *testing.T) {
 		}
 	}
 	walk(reflect.TypeOf(StatusReport{}), "StatusReport")
+
+	// M-D25: the walk above must actually see every field added at G0, with
+	// the metadata-only type the decision fixed.
+	rt := reflect.TypeOf(StatusReport{})
+	for name, want := range map[string]reflect.Type{
+		"LogSeq":  reflect.TypeOf(uint64(0)),
+		"LogHead": reflect.TypeOf(Hash("")),
+	} {
+		f, ok := rt.FieldByName(name)
+		if !ok {
+			t.Errorf("StatusReport.%s missing (M-D35)", name)
+			continue
+		}
+		if f.Type != want {
+			t.Errorf("StatusReport.%s is %v, want %v", name, f.Type, want)
+		}
+	}
 }
 
 func FuzzDecodeStatus(f *testing.F) {
@@ -258,6 +327,8 @@ func FuzzDecodeStatus(f *testing.F) {
 	f.Add(seed)
 	f.Add([]byte(`{"tenant":"t","proxy_id":"p","state":"deny_all"}`))
 	f.Add([]byte(`{"last_error":{"code":"expired"}}`))
+	f.Add([]byte(`{"tenant":"t","proxy_id":"p","state":"deny_all","log_seq":2,"log_head":"` + hashA + `","last_error":{"code":"clock_untrusted"}}`))
+	f.Add([]byte(`{"tenant":"t","proxy_id":"p","state":"deny_all","log_seq":1,"log_head":"","Log_Head":"x"}`))
 	f.Fuzz(func(t *testing.T, body []byte) {
 		var s StatusReport
 		if err := Decode(bytes.NewReader(body), MaxStatusBytes, &s); err != nil {
