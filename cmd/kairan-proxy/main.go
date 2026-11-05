@@ -33,6 +33,8 @@
 //	safe_mode        read_only (default) or deny_all: what an expired policy allows
 //	ca_file          PEM certificates to trust for cp_url, added to the system roots
 //	allow_plaintext  true allows an http:// cp_url (Docker demo only)
+//	metrics_listen   host:port of the local read-only listener (self view and
+//	                 metrics); not set means no such listener. Must differ from listen.
 //
 // The trust root comes only from this file. A config that fails any check
 // (threshold under 2, skew over 5m, safe_mode outside the enum, a bad key, a
@@ -56,6 +58,39 @@
 //
 // If a trusted key is one of the repository's TEST-ONLY fixture keys, the
 // proxy logs a loud warning at start and counts it (test_only_trusted_key).
+//
+// # Local self view and metrics (P-09)
+//
+// With metrics_listen set, a second listener serves two read-only routes, GET
+// and HEAD only (anything else is 405, other paths 404), with no
+// authentication: it is inbound inside the customer network only (PRD J2,
+// M-D51), so bind it to an address on that network. A port already in use
+// stops the proxy at start.
+//
+//	GET /v1/self   JSON with exactly: tenant, proxy_id, state, applied_version,
+//	               policy_hash, log_seq, log_head, clock_untrusted. State is the
+//	               wire state (booting, deny_all, tampered, enforcing,
+//	               safe_mode). policy_hash is "" when no policy is in force. The
+//	               evidence export compares this with the control plane's view
+//	               and the apply log (M-D7, THREATS #2).
+//	GET /metrics   Prometheus text format 0.0.4: gauges kairan_proxy_state{state}
+//	               (one series per state, 1 for the current one; the label is
+//	               the state with "_" written "-": deny-all, safe-mode, as
+//	               metric labels are wire IDs, M-D29),
+//	               kairan_proxy_applied_version, kairan_proxy_log_seq,
+//	               kairan_proxy_clock_untrusted, kairan_proxy_test_only_trusted_keys;
+//	               counters kairan_proxy_calls_allowed_total, _calls_denied_total,
+//	               _requests_rejected_total, _auth_failures_total,
+//	               _upstream_errors_total, _policies_applied_total,
+//	               _policies_rejected_total, _poll_errors_total,
+//	               _status_errors_total, _policy_expired_total,
+//	               _boot_tampered_total, _clock_untrusted_total,
+//	               _decision_log_denied_total, _decision_log_write_errors_total
+//	               and _decision_log_rotate_errors_total.
+//
+// Both are built only from the agent's snapshot and counters: no payload,
+// argument, result, role, API key or user data (invariant I4). The policy hash
+// is in the self view and never a metric label.
 //
 // # Exit status
 //
@@ -115,6 +150,13 @@ func main() {
 // ready, if not nil, is called with the MCP listener's address once the proxy
 // has booted and is accepting connections.
 func run(ctx context.Context, args []string, stderr io.Writer, ready func(addr string)) error {
+	return runLocal(ctx, args, stderr, ready, nil)
+}
+
+// runLocal is run with a second callback: localReady gets the local listener's
+// address (metrics_listen) once it is bound, before ready is called. It is not
+// called if metrics_listen is not set.
+func runLocal(ctx context.Context, args []string, stderr io.Writer, ready, localReady func(addr string)) error {
 	fs := flag.NewFlagSet("kairan-proxy", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	cfgPath := fs.String("config", "", "path to proxy.json")
@@ -188,9 +230,33 @@ func run(ctx context.Context, args []string, stderr io.Writer, ready func(addr s
 	if err != nil {
 		return fmt.Errorf("listen: %w", err)
 	}
+	// The local read-only listener (P-09): bound before anything is served, so
+	// a bad address stops the proxy at start.
+	var lsrv *http.Server
+	var lln net.Listener
+	if cfg.MetricsListen != "" {
+		lln, err = net.Listen("tcp", cfg.MetricsListen)
+		if err != nil {
+			ln.Close()
+			return fmt.Errorf("metrics_listen: %w", err)
+		}
+		lsrv = &http.Server{
+			Handler:           newLocalHandler(cfg.Tenant, cfg.ProxyID, ag.Snapshot, stats),
+			ReadHeaderTimeout: localReadHeaderTimeout,
+			IdleTimeout:       localIdleTimeout,
+			MaxHeaderBytes:    localMaxHeaderBytes,
+		}
+	}
 	srv := enforce.NewServer(cfg.Listen, enforce.New(ecfg, holder, dl, clk, stats))
-	serveErr := make(chan error, 1)
+	serveErr := make(chan error, 2)
 	go func() { serveErr <- srv.Serve(ln) }()
+	if lsrv != nil {
+		go func() { serveErr <- lsrv.Serve(lln) }()
+		if localReady != nil {
+			localReady(lln.Addr().String())
+		}
+		log.Info("local listener", "addr", lln.Addr().String())
+	}
 
 	agentCtx, stopAgent := context.WithCancel(ctx)
 	agentDone := make(chan error, 1)
@@ -210,6 +276,11 @@ func run(ctx context.Context, args []string, stderr io.Writer, ready func(addr s
 	defer cancel()
 	if err := srv.Shutdown(sctx); err != nil {
 		srv.Close()
+	}
+	if lsrv != nil {
+		if err := lsrv.Shutdown(sctx); err != nil {
+			lsrv.Close()
+		}
 	}
 	stopAgent()
 	if err := <-agentDone; err != nil {

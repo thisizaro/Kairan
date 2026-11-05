@@ -3,9 +3,12 @@ package enforce
 import (
 	"encoding/json"
 	"errors"
+	"regexp"
 	"strings"
 	"testing"
 )
+
+var methodRE = regexp.MustCompile(`^[A-Za-z0-9_./-]{1,128}$`)
 
 func TestScanRequestAccepted(t *testing.T) {
 	tests := []struct {
@@ -36,7 +39,6 @@ func TestScanRequestAccepted(t *testing.T) {
 		{"client error response", `{"jsonrpc":"2.0","id":9,"error":{"code":-1,"message":"x"}}`, kindOther, "", "9", false},
 		{"unknown method with weird params", `{"id":1,"method":"resources/read","params":{"URI":"x","URI":"y"}}`, kindOther, "", "1", true},
 		{"extra lowercase envelope key", `{"id":1,"method":"ping","extra":1}`, kindOther, "", "1", false},
-		{"zero-width space makes an unknown method", "{\"id\":1,\"method\":\"tools/call\u200b\"}", kindOther, "", "1", false},
 		{"unicode in argument value", "{\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"a\",\"arguments\":{\"t\":\"日本語\"}}}", kindCall, "a", "1", true},
 	}
 	for _, tc := range tests {
@@ -81,6 +83,25 @@ func TestScanRequestRejected(t *testing.T) {
 		{"method case variant", `{"id":1,"method":"Tools/Call","params":{"name":"a"}}`, errMethod},
 		{"method padded", `{"id":1,"method":" tools/call","params":{"name":"a"}}`, errMethod},
 		{"method upper list", `{"id":1,"method":"TOOLS/LIST"}`, errMethod},
+		// Q-D17/Q-D18 (M-D55): the method is ^[A-Za-z0-9_./-]{1,128}$, byte-exact.
+		{"method NUL prefix", `{"id":1,"method":"\u0000tools/call","params":{"name":"a"}}`, errMethod},
+		{"method SOH suffix", `{"id":1,"method":"tools/list\u0001"}`, errMethod},
+		{"method ESC", `{"id":1,"method":"\u001btools/list"}`, errMethod},
+		{"method US", `{"id":1,"method":"tools/list\u001f"}`, errMethod},
+		{"method DEL", `{"id":1,"method":"tools/call\u007f","params":{"name":"a"}}`, errMethod},
+		{"method zero-width space", `{"id":1,"method":"tools/call\u200b","params":{"name":"a"}}`, errMethod},
+		{"method zero-width joiner", "{\"id\":1,\"method\":\"\u200dtools/call\",\"params\":{\"name\":\"a\"}}", errMethod},
+		{"method zero-width non-joiner", `{"id":1,"method":"tools/list\u200c"}`, errMethod},
+		{"method BOM", `{"id":1,"method":"\ufefftools/list"}`, errMethod},
+		{"method word joiner", `{"id":1,"method":"tools/list\u2060"}`, errMethod},
+		{"method RLO", `{"id":1,"method":"\u202etools/list"}`, errMethod},
+		{"method non-ASCII other", "{\"id\":1,\"method\":\"ping\u00e9\"}", errMethod},
+		{"method non-ASCII lookalike", "{\"id\":1,\"method\":\"tools/call\u0131\",\"params\":{\"name\":\"a\"}}", errMethod},
+		{"method empty", `{"id":1,"method":""}`, errMethod},
+		{"method space inside", `{"id":1,"method":"ping now"}`, errMethod},
+		{"method tab", `{"id":1,"method":"ping\t"}`, errMethod},
+		{"method 129 long", `{"id":1,"method":"` + strings.Repeat("a", 129) + `"}`, errMethod},
+		{"method dollar", `{"id":1,"method":"$/cancel"}`, errMethod},
 		// M-D33 (2): batches.
 		{"batch of calls", `[{"id":1,"method":"tools/call","params":{"name":"a"}}]`, errBatch},
 		{"batch empty", `[]`, errBatch},
@@ -224,6 +245,9 @@ func FuzzScanRequest(f *testing.F) {
 		// The classification agrees with the standard library's reading of method.
 		var m string
 		_ = json.Unmarshal(top["method"], &m)
+		if _, has := top["method"]; has && !methodRE.MatchString(m) {
+			t.Fatalf("method %q outside the charset accepted: %q", m, data)
+		}
 		switch env.Kind {
 		case kindCall:
 			var p map[string]json.RawMessage
@@ -250,4 +274,13 @@ func FuzzScanRequest(f *testing.F) {
 			}
 		}
 	})
+}
+
+func TestMethodCharset(t *testing.T) {
+	for _, m := range []string{"ping", "initialize", "notifications/initialized", "notifications/tools/list_changed", "resources/templates/list", "a", "A-b_c.d/e", strings.Repeat("a", 128)} {
+		env, err := scanRequest([]byte(`{"id":1,"method":"` + m + `"}`))
+		if err != nil || env.Kind != kindOther {
+			t.Errorf("method %q: %+v %v", m, env, err)
+		}
+	}
 }
