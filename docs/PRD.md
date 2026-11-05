@@ -82,13 +82,13 @@ No Tumiki clone (no PII masking, virtual-MCP builder, connectors). Not a full MC
 ## 9. Metrics (all produced by `make bench` into RESULTS.md: commit, machine, >= 5 runs, median and spread; real and simulated labeled separately)
 | # | Metric | Measured by | Target |
 |---|---|---|---|
-| M1 | Propagation time p50/p95/p99 | publish timestamp vs each ack; 10 real (Docker), 100 / 1,000 simulated | TODO(Phase 0): numeric target (design says hypotheses, report honestly) |
-| M2 | Dead-proxy detection time | kill a container, time to stale/lost | TODO(Phase 0): numeric target |
-| M3 | Catch-up after network cut | disconnect, publish, reconnect, time to ack | TODO(Phase 0): numeric target |
-| M4 | Enforcement overhead | Go benchmarks (ns, allocs) and e2e latency with/without proxy | TODO(Phase 0): numeric target |
+| M1 | Propagation time p50/p95/p99 | publish timestamp vs each ack; 10 real (Docker), 100 / 1,000 simulated | TODO(Phase 0): numeric target (design says hypotheses, report honestly). Proposal: M-D6 |
+| M2 | Dead-proxy detection time | kill a container, time to stale/lost | TODO(Phase 0): numeric target. Proposal: M-D6 |
+| M3 | Catch-up after network cut | disconnect, publish, reconnect, time to ack | TODO(Phase 0): numeric target. Proposal: M-D6 |
+| M4 | Enforcement overhead | Go benchmarks (ns, allocs) and e2e latency with/without proxy | TODO(Phase 0): numeric target. Proposal: M-D6 |
 | M5 | Outage correctness | thousands of mixed calls during control-plane outage | **0 wrongly allowed** |
 | M6 | Bad-policy rejection | unsigned, 1 sig, old version, wrong tenant, expired, corrupted | **0 applied** |
-| M7 | Control-plane cost | memory, CPU, connections per 1,000 watching proxies (kairan-sim) | TODO(Phase 0): numeric target |
+| M7 | Control-plane cost | memory, CPU, connections per 1,000 watching proxies (kairan-sim) | TODO(Phase 0): numeric target. Proposal: M-D6 |
 | M8 | Data leakage | canary secrets seen in captured control-plane traffic | **0 hits** |
 
 ## 10. Acceptance criteria (definition of done)
