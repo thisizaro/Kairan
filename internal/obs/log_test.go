@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"reflect"
 	"strings"
 	"testing"
@@ -186,5 +187,71 @@ func TestExportedAPIHasNoFreeTextParameters(t *testing.T) {
 		if ft.NumIn() != 2 || ft.In(1) != idSlice {
 			t.Errorf("%s must take ...wire.ID, got %v", name, ft)
 		}
+	}
+}
+
+type derefStringer struct{ secret string }
+
+func (d *derefStringer) String() string { return d.secret }
+
+type derefError struct{ secret string }
+
+func (d *derefError) Error() string { return d.secret }
+
+type leakStringer struct{ secret string }
+
+func (l leakStringer) String() string { return "tool-call:" + l.secret }
+
+type panicStringer struct{}
+
+func (panicStringer) String() string { panic("boom " + canary) }
+
+// Q-D9: a typed nil pointer whose String or Error method dereferences it must
+// not take the process down; the value is redacted.
+func TestLoggerSurvivesNilPointerStringers(t *testing.T) {
+	var ds *derefStringer
+	var de *derefError
+	var buf bytes.Buffer
+	l := NewLogger(&buf, slog.LevelInfo)
+	l.Info("m", slog.Any("s", ds), slog.Any("e", de), slog.Any("p", panicStringer{}), slog.Any("ok", "kept"))
+	out := buf.String()
+	if strings.Contains(out, canary) {
+		t.Fatalf("panic text leaked: %s", out)
+	}
+	if !strings.Contains(out, `"ok":"kept"`) || strings.Count(out, `"[redacted`) < 3 {
+		t.Fatalf("want 3 redacted values and the good one kept: %s", out)
+	}
+}
+
+// Q-D14: Stringers are redacted unless allowlisted; a URL is never rendered.
+func TestLoggerRedactsStringers(t *testing.T) {
+	u, _ := url.Parse("https://x.example/path?q=" + canary)
+	tm := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
+	var buf bytes.Buffer
+	l := NewLogger(&buf, slog.LevelInfo)
+	l.Info("m",
+		slog.Any("u", u), slog.Any("uv", *u), slog.Any("l", leakStringer{canary}),
+		slog.Any("t", tm), slog.Any("tp", &tm), slog.Any("d", 1500*time.Millisecond),
+		slog.Any("code", wire.ErrThreshold), slog.Any("id", wire.ID("bank-a")))
+	out := buf.String()
+	if strings.Contains(out, canary) || strings.Contains(out, "x.example") {
+		t.Fatalf("Stringer output leaked: %s", out)
+	}
+	m := logLines(t, bytes.NewBufferString(out))[0]
+	for _, k := range []string{"u", "uv", "l"} {
+		if s, _ := m[k].(string); !strings.HasPrefix(s, "[redacted") {
+			t.Errorf("%s = %v, want redacted", k, m[k])
+		}
+	}
+	if m["code"] != string(wire.ErrThreshold) || m["id"] != "bank-a" {
+		t.Errorf("wire types altered: %v %v", m["code"], m["id"])
+	}
+	for _, k := range []string{"t", "tp"} {
+		if s, _ := m[k].(string); !strings.HasPrefix(s, "2026-11-05") {
+			t.Errorf("%s = %v, want the time", k, m[k])
+		}
+	}
+	if m["d"] == nil || m["d"] == "[redacted]" {
+		t.Errorf("duration lost: %v", m["d"])
 	}
 }

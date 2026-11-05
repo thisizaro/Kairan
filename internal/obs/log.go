@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"reflect"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"kairan/internal/wire"
@@ -42,8 +43,13 @@ func Proxy(id wire.ID) slog.Attr  { return slog.String("proxy", string(sanitize(
 //     group depth, also when the group itself carries such a name;
 //   - replaces byte slices, io.Readers/Writers, *http.Request and every
 //     composite value (structs, maps, slices, pointers) with a placeholder;
-//   - passes numbers, bools, durations, times, strings, errors and
-//     fmt.Stringers, truncating strings longer than MaxLogValueBytes.
+//   - passes numbers, bools, durations, times, strings and errors,
+//     truncating strings longer than MaxLogValueBytes;
+//   - redacts every fmt.Stringer except time.Time, time.Duration and the named
+//     types of package wire, because a String method can return call data.
+//     A *url.URL is never rendered: its query can carry call data;
+//   - recovers from an Error or String method that panics (for example a nil
+//     pointer receiver that dereferences itself) and logs "[redacted]".
 //
 // This cannot stop a caller from putting call data in the message text or in
 // an error string; code must not do that. It stops the accidental cases.
@@ -164,9 +170,42 @@ func safeAny(v any) slog.Value {
 	}
 	switch x := v.(type) {
 	case error:
-		return slog.StringValue(truncate(x.Error()))
+		return safeString(x.Error)
 	case fmt.Stringer:
-		return slog.StringValue(truncate(x.String()))
+		if stringerAllowed(t) {
+			return safeString(x.String)
+		}
 	}
 	return slog.StringValue("[redacted:" + t.Kind().String() + "]")
+}
+
+var (
+	timeType    = reflect.TypeOf(time.Time{})
+	durationTyp = reflect.TypeOf(time.Duration(0))
+	wirePkg     = reflect.TypeOf(wire.ID("")).PkgPath()
+)
+
+// stringerAllowed says whether a fmt.Stringer of type t may be rendered. A
+// String method can return anything, call data included, and a *url.URL with
+// a query certainly can, so only types known to be safe pass: time.Time,
+// time.Duration and the named types of package wire. Everything else is
+// redacted (Q-D14). Types of kind string or number never get here: they are
+// rendered from their value, not their String method.
+func stringerAllowed(t reflect.Type) bool {
+	if t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+	return t == timeType || t == durationTyp || t.PkgPath() == wirePkg
+}
+
+// safeString calls f, which may be an Error or String method. A method that
+// panics (typically a nil pointer receiver) is redacted, never propagated:
+// logging must not take the process down (Q-D9). The panic text is dropped.
+func safeString(f func() string) (v slog.Value) {
+	defer func() {
+		if recover() != nil {
+			v = slog.StringValue(redacted)
+		}
+	}()
+	return slog.StringValue(truncate(f()))
 }

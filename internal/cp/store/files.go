@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"kairan/internal/cp/fleet"
@@ -52,6 +53,7 @@ type rolloutFile struct {
 	DwellNs  int64             `json:"dwell_ns"`
 	CanaryOK time.Time         `json:"canary_ok,omitzero"`
 	Promoted bool              `json:"promoted,omitempty"`
+	Rejected bool              `json:"rejected,omitempty"`
 }
 
 // tlRec is a timeline entry plus the apply-log anchor of the latest report
@@ -123,6 +125,9 @@ func readDir(dir string) ([]os.DirEntry, error) {
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
+	if errors.Is(err, syscall.ENOTDIR) || errors.Is(err, syscall.ELOOP) {
+		return nil, corrupt(filepath.Base(dir)) // a file or a FIFO where a directory belongs
+	}
 	if err != nil {
 		return nil, fmt.Errorf("store: read %s: %w", dir, err)
 	}
@@ -139,10 +144,37 @@ func readDir(dir string) ([]os.DirEntry, error) {
 	return out, nil
 }
 
-func decodeFile(path, rel string, v any) error {
-	b, err := os.ReadFile(path)
+// readRegular reads a state file. Only a regular file is accepted: the open
+// is non-blocking and does not follow links, so a FIFO or a link is refused
+// at once instead of hanging the open for a writer (Q-D8). The check is made
+// on the open descriptor, so a file swapped in after a listing cannot slip by.
+func readRegular(path, rel string) ([]byte, error) {
+	fh, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0)
 	if err != nil {
-		return fmt.Errorf("store: read %s: %w", rel, err)
+		if errors.Is(err, syscall.ELOOP) {
+			return nil, corrupt(rel) // a link
+		}
+		return nil, fmt.Errorf("store: read %s: %w", rel, err)
+	}
+	defer fh.Close()
+	st, err := fh.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("store: read %s: %w", rel, err)
+	}
+	if !st.Mode().IsRegular() {
+		return nil, corrupt(rel)
+	}
+	b, err := io.ReadAll(fh)
+	if err != nil {
+		return nil, fmt.Errorf("store: read %s: %w", rel, err)
+	}
+	return b, nil
+}
+
+func decodeFile(path, rel string, v any) error {
+	b, err := readRegular(path, rel)
+	if err != nil {
+		return err
 	}
 	dec := json.NewDecoder(bytes.NewReader(b))
 	dec.DisallowUnknownFields()
@@ -228,7 +260,7 @@ func (f *files) loadRollouts() error {
 			return err
 		}
 		r := rollout.Rollout{Tenant: rec.Tenant, Version: rec.Version, Previous: rec.Previous,
-			Phase: rec.Phase, Reason: rec.Reason, Dwell: time.Duration(rec.DwellNs), CanaryOK: rec.CanaryOK, Promoted: rec.Promoted}
+			Phase: rec.Phase, Reason: rec.Reason, Dwell: time.Duration(rec.DwellNs), CanaryOK: rec.CanaryOK, Promoted: rec.Promoted, Rejected: rec.Rejected}
 		if rec.Tenant != tn || checkRollout(r) != nil {
 			return corrupt(rel)
 		}
@@ -415,7 +447,7 @@ func (f *files) PutRollout(r rollout.Rollout) error {
 		return err
 	}
 	b, err := json.Marshal(rolloutFile{Tenant: r.Tenant, Version: r.Version, Previous: r.Previous,
-		Phase: r.Phase, Reason: r.Reason, DwellNs: int64(r.Dwell), CanaryOK: r.CanaryOK.UTC(), Promoted: r.Promoted})
+		Phase: r.Phase, Reason: r.Reason, DwellNs: int64(r.Dwell), CanaryOK: r.CanaryOK.UTC(), Promoted: r.Promoted, Rejected: r.Rejected})
 	if err != nil {
 		return fmt.Errorf("store: encode rollout: %w", err)
 	}
@@ -510,7 +542,8 @@ func importantChange(prev fleet.Last, next fleet.Last) bool {
 func extendTimeline(tl []tlRec, l fleet.Last) (out []tlRec, grew bool) {
 	r := l.Report
 	ms := l.SeenAt.UnixMilli()
-	if n := len(tl); n > 0 && tl[n-1].Version == r.AppliedVersion && tl[n-1].PolicyHash == r.PolicyHash {
+	if n := len(tl); n > 0 && tl[n-1].Version == r.AppliedVersion && tl[n-1].PolicyHash == r.PolicyHash &&
+		!anchorRegressed(tl[n-1], r) {
 		last := tl[n-1]
 		if ms > last.LastSeenUnixMs {
 			last.LastSeenUnixMs = ms
@@ -525,6 +558,15 @@ func extendTimeline(tl []tlRec, l fleet.Last) (out []tlRec, grew bool) {
 		LogSeq: r.LogSeq, LogHead: r.LogHead,
 	}
 	return append(tl[:len(tl):len(tl)], e), true
+}
+
+// anchorRegressed is true when a report's apply-log anchor went backwards
+// against the entry's: a lower log_seq, or the same log_seq with another
+// log_head (a log that was cut or rewritten, I6). A regression is its own
+// period in the timeline, so evidence sees the higher anchor and then the
+// lower one, never the lower one overwriting the higher (Q-D15).
+func anchorRegressed(e tlRec, r wire.StatusReport) bool {
+	return r.LogSeq < e.LogSeq || (r.LogSeq == e.LogSeq && r.LogHead != e.LogHead)
 }
 
 func (f *files) Fleet(tenant wire.ID) ([]fleet.Last, error) {

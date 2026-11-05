@@ -615,3 +615,69 @@ func TestJourneyHaltAndRollback(t *testing.T) {
 		t.Fatalf("rollback: %+v %v", r2, des)
 	}
 }
+
+// Q-D7: a request that cannot be a rollout must not raise any group, canary
+// included.
+func TestMalformedStartRaisesNothing(t *testing.T) {
+	f := fleetOf(px{id: "c1", group: CanaryGroup, applied: prevVer}, px{id: "m1", group: "main", applied: prevVer})
+	tests := []struct {
+		name string
+		req  wire.RolloutRequest
+		prev uint64
+	}{
+		{"empty tenant", wire.RolloutRequest{Tenant: "", Version: ver}, prevVer},
+		{"bad tenant", wire.RolloutRequest{Tenant: "ACME!", Version: ver}, prevVer},
+		{"zero version", wire.RolloutRequest{Tenant: "acme", Version: 0}, prevVer},
+		{"not newer", wire.RolloutRequest{Tenant: "acme", Version: prevVer}, prevVer},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r := Start(tc.req, tc.prev, t0, dwell)
+			if r.Phase != wire.PhaseHalted {
+				t.Fatalf("phase %s", r.Phase)
+			}
+			for _, g := range []wire.ID{CanaryGroup, "main", "eu"} {
+				if got := DesiredFor(r, g); got != tc.prev {
+					t.Fatalf("DesiredFor(%s) = %d, want %d", g, got, tc.prev)
+				}
+			}
+			got, des := Step(r, f, t0.Add(time.Hour))
+			if got.Phase != wire.PhaseHalted {
+				t.Fatalf("Step moved a halted rollout: %+v", got)
+			}
+			for g, v := range des {
+				if v != tc.prev {
+					t.Fatalf("Step desired %s = %d, want %d", g, v, tc.prev)
+				}
+			}
+		})
+	}
+}
+
+// A valid-looking request for a tenant that is not the fleet's halts on the
+// first Step, and the canary must not have been raised for it.
+func TestStepWrongTenantInCanaryRaisesNothing(t *testing.T) {
+	r := Start(wire.RolloutRequest{Tenant: "other", Version: ver}, prevVer, t0, dwell)
+	if r.Phase != wire.PhaseCanary {
+		t.Fatalf("phase %s", r.Phase)
+	}
+	f := fleetOf(px{id: "c1", group: CanaryGroup, applied: prevVer}, px{id: "m1", group: "main", applied: prevVer})
+	got, des := Step(r, f, t0)
+	if got.Phase != wire.PhaseHalted || got.Reason != wire.ErrWrongTenant {
+		t.Fatalf("got %+v", got)
+	}
+	if des[CanaryGroup] != prevVer || des["main"] != prevVer {
+		t.Fatalf("desired %v", des)
+	}
+}
+
+// A canary that was legitimately raised and then failed stays raised (M-D44).
+func TestHaltedByCanaryFailureKeepsCanaryRaised(t *testing.T) {
+	r := canaryRollout()
+	f := fleetOf(px{id: "c1", group: CanaryGroup, applied: prevVer,
+		err: &wire.ApplyError{Code: wire.ErrThreshold, Version: ver}}, px{id: "m1", group: "main", applied: prevVer})
+	got, des := Step(r, f, t0)
+	if got.Phase != wire.PhaseHalted || des[CanaryGroup] != ver || des["main"] != prevVer {
+		t.Fatalf("got %+v %v", got, des)
+	}
+}
