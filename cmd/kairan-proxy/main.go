@@ -5,6 +5,7 @@
 // Usage:
 //
 //	kairan-proxy -config proxy.json
+//	kairan-proxy -config proxy.json -import bundle.json
 //
 // This file is only wiring (ARCHITECTURE section 10, cmd/kairan-proxy). The
 // logic is in internal/proxy/agent (boot, poll, status), internal/proxy/enforce
@@ -92,10 +93,38 @@
 // argument, result, role, API key or user data (invariant I4). The policy hash
 // is in the self view and never a metric label.
 //
+// # Offline import (P-11, PRD J3)
+//
+// With -import, kairan-proxy does not serve and does not use the network. It
+// reads one JSON-encoded signed envelope (what kairanctl sign and approve
+// write) and applies it to data_dir by the same path as a policy from the
+// control plane: the strict decoder, trust.Accept (a threshold of distinct
+// trusted signatures, tenant, a version above everything applied before, not
+// expired at effective_now), store.Save, then an apply-log entry. The trust
+// root is the one in proxy.json. A rejected bundle (unsigned, one signature,
+// old version, wrong tenant, expired, corrupted, not an envelope) applies
+// nothing, leaves the policy in force and the stored file unchanged, and is
+// written to the apply log with its reason. A bundle file that is not a
+// regular file (a FIFO, a device, a directory) or is larger than an envelope
+// may be is refused before it is read. An apply log that fails verification
+// means nothing is imported. The result is printed in English and Japanese on
+// standard error; nothing from the bundle is printed. A proxy that starts
+// afterwards enforces the imported policy from disk; an import does not
+// change a proxy that is already running.
+//
+// # The data directory is locked
+//
+// A process takes an exclusive lock on data_dir/kairan.lock for its whole
+// run (the proxy) or until it is done (an import), waiting up to 5 seconds. A
+// second process (an import beside a running proxy, or two proxies) stops
+// with "the data directory is in use", so two writers can never break the
+// apply-log chain. The lock goes away with the process.
+//
 // # Exit status
 //
-// 0 after a clean shutdown, 2 for a bad command line or config, 1 for a
-// runtime failure at startup.
+// 0 after a clean shutdown or a successful import, 2 for a bad command line
+// or config, 1 for a runtime failure at startup or a rejected or unreadable
+// bundle.
 package main
 
 import (
@@ -115,10 +144,8 @@ import (
 
 	"kairan/internal/clock"
 	"kairan/internal/proxy/agent"
-	"kairan/internal/proxy/applylog"
 	"kairan/internal/proxy/declog"
 	"kairan/internal/proxy/enforce"
-	"kairan/internal/proxy/store"
 )
 
 // Metric name for a TEST-ONLY trusted key (M-D37).
@@ -160,16 +187,22 @@ func runLocal(ctx context.Context, args []string, stderr io.Writer, ready, local
 	fs := flag.NewFlagSet("kairan-proxy", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	cfgPath := fs.String("config", "", "path to proxy.json")
+	importPath := fs.String("import", "", "apply this offline signed bundle to the data directory and exit")
 	if err := fs.Parse(args); err != nil {
 		return fmt.Errorf("%w: %v", errUsage, err)
 	}
-	if fs.NArg() != 0 || *cfgPath == "" {
+	importSet := false
+	fs.Visit(func(f *flag.Flag) { importSet = importSet || f.Name == "import" })
+	if fs.NArg() != 0 || *cfgPath == "" || (importSet && *importPath == "") {
 		fs.Usage()
-		return fmt.Errorf("%w: need -config proxy.json", errUsage)
+		return fmt.Errorf("%w: need -config proxy.json [-import bundle.json]", errUsage)
 	}
 	cfg, err := LoadConfig(*cfgPath)
 	if err != nil {
 		return fmt.Errorf("%w: %v", errUsage, err)
+	}
+	if importSet {
+		return importBundle(cfg, *importPath, stderr)
 	}
 	log := slog.New(slog.NewJSONHandler(stderr, nil))
 	clk := clock.NewReal()
@@ -177,29 +210,22 @@ func runLocal(ctx context.Context, args []string, stderr io.Writer, ready, local
 
 	noteTestOnlyKeys(cfg, stats, log)
 
-	st, err := store.Open(cfg.DataDir)
+	unlock, err := lockDataDir(cfg.DataDir)
 	if err != nil {
-		return fmt.Errorf("data_dir: %w", err)
-	}
-	guard, err := agent.OpenClockGuard(clk, cfg.DataDir)
-	switch {
-	case errors.Is(err, agent.ErrHighWaterCorrupt):
-		log.Warn("high-water file is corrupt; it will be rewritten")
-	case err != nil:
 		return err
+	}
+	defer unlock()
+	st, guard, al, logErr, err := openData(cfg, clk, log)
+	if err != nil {
+		return err
+	}
+	if al != nil {
+		defer al.Close()
 	}
 
 	acfg := agent.Config{
 		CP: cfg.CP, Tenant: cfg.Tenant, ProxyID: cfg.ProxyID, Token: cfg.Token, Root: cfg.Root,
-		Skew: cfg.Skew, Guard: guard, AllowPlaintext: cfg.AllowPlaintext,
-	}
-	al, err := applylog.Open(filepath.Join(cfg.DataDir, applyLogFile), clk)
-	if err != nil {
-		// Do not repair or work around it: boot as Tampered, apply nothing.
-		log.Error("apply log failed verification; starting tampered (deny-all)", "err", err)
-		al, acfg.LogOpenErr = nil, err
-	} else {
-		defer al.Close()
+		Skew: cfg.Skew, Guard: guard, AllowPlaintext: cfg.AllowPlaintext, LogOpenErr: logErr,
 	}
 	dl, err := declog.Open(filepath.Join(cfg.DataDir, decisionLogFile), declog.Options{Metrics: stats})
 	if err != nil {
