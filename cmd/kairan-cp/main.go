@@ -12,7 +12,10 @@
 // travels on the command line (see adminToken). -check validates the config
 // and the token and exits without touching the data directory or the network.
 //
-// Every message for a person is printed in English and in Japanese. Exit
+// Every message for a person is printed in English and in Japanese: errors
+// and -check as an English line and a Japanese line, usage as one text, and
+// log lines (warnings too) with the English text in msg and the Japanese text
+// in msg_ja. Exit
 // status: 0 clean stop (SIGTERM or SIGINT) or a good -check, 2 for a usage,
 // config or token error, 1 for a failure at startup or while serving.
 package main
@@ -52,16 +55,49 @@ func report(stderr io.Writer, e *cliError) {
 	fmt.Fprintf(stderr, "kairan-cp: error: %s\nkairan-cp: エラー: %s\n", e.en, e.ja)
 }
 
+// usageText is the help text, in both languages.
+const usageText = `usage: kairan-cp -config FILE [-admin-token-file FILE] [-check]
+使い方: kairan-cp -config FILE [-admin-token-file FILE] [-check]
+
+  -config FILE
+        path of the control plane config file (JSON)
+        コントロールプレーンの設定ファイル (JSON) のパス
+  -admin-token-file FILE
+        file holding the admin token (or set ` + envTokenFile + ` or ` + envToken + `)
+        管理トークンを入れたファイル (または ` + envTokenFile + ` か ` + envToken + ` を設定)
+  -check
+        check the config and the admin token, then exit
+        設定と管理トークンを確認して終了する
+`
+
+// flagError turns an error of the flag package (English only) into a message
+// in both languages. It never repeats the value the person typed.
+func flagError(err error) *cliError {
+	s := err.Error()
+	switch {
+	case strings.HasPrefix(s, "flag provided but not defined: "):
+		f := short(strings.TrimPrefix(s, "flag provided but not defined: "))
+		return msg("unknown flag: "+f, "未知のフラグです: "+f)
+	case strings.HasPrefix(s, "flag needs an argument: "):
+		f := short(strings.TrimPrefix(s, "flag needs an argument: "))
+		return msg("flag needs an argument: "+f, "フラグに引数が必要です: "+f)
+	}
+	return msg("a flag has an invalid value", "フラグの値が正しくありません")
+}
+
 func run(args []string, getenv func(string) string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("kairan-cp", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	fs.SetOutput(io.Discard) // the flag package speaks English only; see flagError and usageText
 	cfgPath := fs.String("config", "", "path of the control plane config file (JSON)")
 	tokFile := fs.String("admin-token-file", "", "file holding the admin token (or set "+envTokenFile+" or "+envToken+")")
 	check := fs.Bool("check", false, "check the config and the admin token, then exit")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
+			fmt.Fprint(stderr, usageText)
 			return 0
 		}
+		report(stderr, flagError(err))
+		fmt.Fprint(stderr, usageText)
 		return 2
 	}
 	if fs.NArg() > 0 {
@@ -161,11 +197,11 @@ func serve(cfg *config, token string, stderr io.Writer) *cliError {
 			MaxHeaderBytes:    8 << 10,
 		}
 		if !loopback(cfg.MetricsListen) {
-			log.Warn("metrics listener is not on loopback; metrics have no authentication, keep this port off untrusted networks")
+			say(log, slog.LevelWarn, evMetricsOpen)
 		}
 	}
 	if cfg.Certificate == nil {
-		log.Warn("serving plaintext HTTP (allow_plaintext); tokens and policies cross the network unencrypted, use this for demos only")
+		say(log, slog.LevelWarn, evPlaintext)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
@@ -199,17 +235,17 @@ func serve(cfg *config, token string, stderr io.Writer) *cliError {
 			}
 		}()
 	}
-	log.Info("listening", slog.String("addr", ln.Addr().String()), slog.String("metrics_addr", metricsAddr),
+	say(log, slog.LevelInfo, evListening, slog.String("addr", ln.Addr().String()), slog.String("metrics_addr", metricsAddr),
 		slog.Int("tenants", len(cfg.AdminKeys)), slog.Int("proxies", len(cfg.Proxies)))
 
 	var serveErr error
 	select {
 	case <-ctx.Done():
 	case serveErr = <-fail:
-		log.Error("server failed")
+		say(log, slog.LevelError, evServerFailed)
 	}
 	stop() // a second signal now ends the process at once
-	log.Info("shutting down")
+	say(log, slog.LevelInfo, evShuttingDown)
 	cancelBase()
 	sctx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
 	defer cancel()
@@ -222,11 +258,38 @@ func serve(cfg *config, token string, stderr io.Writer) *cliError {
 		_ = ms.Close()
 	}
 	wg.Wait()
-	log.Info("stopped")
+	say(log, slog.LevelInfo, evStopped)
 	if serveErr != nil {
 		return msg("the server stopped: "+serveErr.Error(), "サーバーが停止しました: "+serveErr.Error())
 	}
 	return nil
+}
+
+// event is a log line meant for a person, in both languages. The English text
+// is the msg field (log pipelines and tests match on it); the Japanese text
+// is the msg_ja field of the same line.
+type event struct{ en, ja string }
+
+var (
+	evMetricsOpen = event{
+		"metrics listener is not on loopback; metrics have no authentication, keep this port off untrusted networks",
+		"メトリクスの待ち受けがループバックではありません。メトリクスに認証はないので、信頼できないネットワークには公開しないでください"}
+	evPlaintext = event{
+		"serving plaintext HTTP (allow_plaintext); tokens and policies cross the network unencrypted, use this for demos only",
+		"平文の HTTP で提供しています (allow_plaintext)。トークンとポリシーが暗号化されずにネットワークを流れます。デモ専用です"}
+	evListening    = event{"listening", "待ち受けを開始しました"}
+	evServerFailed = event{"server failed", "サーバーが失敗しました"}
+	evShuttingDown = event{"shutting down", "停止しています"}
+	evStopped      = event{"stopped", "停止しました"}
+)
+
+// events lists every log event, so that a test can check each has both
+// languages.
+var events = []event{evMetricsOpen, evPlaintext, evListening, evServerFailed, evShuttingDown, evStopped}
+
+// say logs ev in both languages. All log lines of this program go through it.
+func say(log *slog.Logger, level slog.Level, ev event, attrs ...any) {
+	log.Log(context.Background(), level, ev.en, append([]any{slog.String("msg_ja", ev.ja)}, attrs...)...)
 }
 
 func listenErr(key string, err error) *cliError {
