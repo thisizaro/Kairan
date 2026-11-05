@@ -3,6 +3,7 @@ package agent
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"log/slog"
 	"time"
 
 	"kairan/internal/policy"
@@ -83,14 +84,14 @@ func (a *Agent) apply(env wire.Envelope, advisory uint64) bool {
 		return false
 	}
 	if err := a.st.Save(env); err != nil {
-		a.log.Error("apply: save failed", "version", ver, "err", err)
+		say(a.log, slog.LevelError, evSaveFailed, "version", ver, "err", err)
 		a.reject(wire.ErrPersist, ver, hash, from)
 		return false
 	}
 	if _, err := a.al.Append(applylog.Entry{From: from, To: ver, Hash: hash}); err != nil {
 		// The file on disk is now newer than the log; the next boot repairs
 		// that. Until then the old policy stays in force.
-		a.log.Error("apply: log append failed", "version", ver, "err", err)
+		say(a.log, slog.LevelError, evLogAppend, "version", ver, "err", err)
 		a.reject(wire.ErrPersist, ver, hash, from)
 		return false
 	}
@@ -104,7 +105,7 @@ func (a *Agent) apply(env wire.Envelope, advisory uint64) bool {
 	a.failures = 0
 	a.mu.Unlock()
 	a.stats.Inc(MetricApplyOK)
-	a.log.Info("policy applied", "version", ver, "state", string(next))
+	say(a.log, slog.LevelInfo, evApplied, "version", ver, "state", string(next))
 	a.wake(a.wakeEx)
 	a.wake(a.kick)
 	return true
@@ -123,10 +124,10 @@ func (a *Agent) reject(code wire.ErrorCode, to uint64, hash wire.Hash, from uint
 	a.lastRej = key
 	a.failures++
 	a.mu.Unlock()
-	a.log.Warn("envelope rejected", "code", string(code), "version", to)
+	say(a.log, slog.LevelWarn, evRejected, "code", string(code), "version", to)
 	if !dup && a.al != nil {
 		if _, err := a.al.Append(applylog.Entry{From: from, To: to, Hash: hash, Result: code}); err != nil {
-			a.log.Error("apply log: rejection not recorded", "err", err)
+			say(a.log, slog.LevelError, evRejectLost, "err", err)
 		}
 	}
 	a.wake(a.kick)
@@ -156,7 +157,7 @@ func (a *Agent) checkExpiry() {
 	a.view.active = act
 	a.st8 = next
 	a.stats.Inc(MetricExpired)
-	a.log.Warn("policy expired; safe mode", "version", a.view.version)
+	say(a.log, slog.LevelWarn, evExpired, "version", a.view.version)
 	a.wake(a.kick)
 }
 
