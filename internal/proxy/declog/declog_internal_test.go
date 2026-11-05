@@ -63,7 +63,7 @@ func TestEncodeGolden(t *testing.T) {
 }
 
 func TestEncodeRejectsFreeText(t *testing.T) {
-	long := strings.Repeat("x", maxRoleLen+1)
+	long := strings.Repeat("x", 300)
 	for name, mut := range map[string]func(*enforce.Record){
 		"tool with space":       func(r *enforce.Record) { r.Tool = "notes read" },
 		"tool with quote":       func(r *enforce.Record) { r.Tool = `a"b` },
@@ -71,6 +71,14 @@ func TestEncodeRejectsFreeText(t *testing.T) {
 		"tool too long":         func(r *enforce.Record) { r.Tool = strings.Repeat("a", policy.MaxToolNameLen+1) },
 		"tool arguments pasted": func(r *enforce.Record) { r.Tool = `notes.read{"q":"secret"}` },
 		"role too long":         func(r *enforce.Record) { r.Role = long },
+		"role with space":       func(r *enforce.Record) { r.Role = "a b" },
+		"role with quote":       func(r *enforce.Record) { r.Role = `a"b` },
+		"role with newline":     func(r *enforce.Record) { r.Role = "a\nb" },
+		"role with ESC":         func(r *enforce.Record) { r.Role = "a\x1b[2Jb" },
+		"role upper case":       func(r *enforce.Record) { r.Role = "Reader" },
+		"role empty":            func(r *enforce.Record) { r.Role = "" },
+		"role leading dash":     func(r *enforce.Record) { r.Role = "-x" },
+		"role 64 chars":         func(r *enforce.Record) { r.Role = strings.Repeat("a", 64) },
 		"bad class":             func(r *enforce.Record) { r.Class = 'Z' },
 		"hash not hex":          func(r *enforce.Record) { r.Hash = "free text here" },
 		"hash too short":        func(r *enforce.Record) { r.Hash = "abcd" },
@@ -123,16 +131,29 @@ func TestDecodeIsStrict(t *testing.T) {
 	good, _ := encode(sample())
 	g := strings.TrimSuffix(string(good), "\n")
 	for name, in := range map[string]string{
-		"extra field":   strings.TrimSuffix(g, "}") + `,"args":"x"}`,
-		"missing field": strings.Replace(g, `"role":"reader",`, "", 1),
-		"duplicate key": strings.Replace(g, `"role":"reader"`, `"role":"reader","role":"boss"`, 1),
-		"not json":      `hello`,
-		"two objects":   g + g,
-		"empty":         ``,
-		"time not UTC":  strings.Replace(g, "Z\"", "+02:00\"", 1),
-		"bad class":     strings.Replace(g, `"class":"R"`, `"class":"RW"`, 1),
-		"negative ver":  strings.Replace(g, `"version":7`, `"version":-7`, 1),
-		"capitalised":   strings.Replace(g, `"role"`, `"Role"`, 1),
+		"extra field":       strings.TrimSuffix(g, "}") + `,"args":"x"}`,
+		"missing field":     strings.Replace(g, `"role":"reader",`, "", 1),
+		"duplicate key":     strings.Replace(g, `"role":"reader"`, `"role":"reader","role":"boss"`, 1),
+		"not json":          `hello`,
+		"two objects":       g + g,
+		"empty":             ``,
+		"time not UTC":      strings.Replace(g, "Z\"", "+02:00\"", 1),
+		"bad class":         strings.Replace(g, `"class":"R"`, `"class":"RW"`, 1),
+		"negative ver":      strings.Replace(g, `"version":7`, `"version":-7`, 1),
+		"capitalised":       strings.Replace(g, `"role"`, `"Role"`, 1),
+		"null tool":         strings.Replace(g, `"tool":"notes.read"`, `"tool":null`, 1),
+		"null allowed":      strings.Replace(g, `"allowed":true`, `"allowed":null`, 1),
+		"null version":      strings.Replace(g, `"version":7`, `"version":null`, 1),
+		"null role":         strings.Replace(g, `"role":"reader"`, `"role":null`, 1),
+		"null time":         strings.Replace(g, `"time":"2026-11-05T10:00:00.123456789Z"`, `"time":null`, 1),
+		"null class":        strings.Replace(g, `"class":"R"`, `"class":null`, 1),
+		"null hash":         strings.Replace(g, `"hash":"`+string(sample().Hash)+`"`, `"hash":null`, 1),
+		"null state":        strings.Replace(g, `"state":"enforcing"`, `"state":null`, 1),
+		"role with space":   strings.Replace(g, `"role":"reader"`, `"role":"a b"`, 1),
+		"role with quote":   strings.Replace(g, `"role":"reader"`, `"role":"a\"b"`, 1),
+		"role with newline": strings.Replace(g, `"role":"reader"`, `"role":"a\nb"`, 1),
+		"role with ESC":     strings.Replace(g, `"role":"reader"`, `"role":"a\u001bb"`, 1),
+		"role empty":        strings.Replace(g, `"role":"reader"`, `"role":""`, 1),
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := Decode([]byte(in)); err == nil {
