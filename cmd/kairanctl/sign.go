@@ -98,11 +98,21 @@ func cmdApprove(args []string, s streams) error {
 	in := fs.String("in", "", "envelope file to approve")
 	out := fs.String("out", "", "write the result to a new file instead of updating -in")
 	yes := fs.Bool("yes", false, "do not ask for confirmation (scripts and tests)")
+	trustedSpec := fs.String("trusted", "", "check the existing signatures first: comma-separated public key files (NAME.pub) or hex public keys")
 	if err := parseFlags(fs, args, s); err != nil {
 		return err
 	}
 	if *keyPath == "" || *in == "" {
 		return usageErr("-key and -in are required", "-key と -in は必須です")
+	}
+	trustedGiven := false
+	fs.Visit(func(f *flag.Flag) { trustedGiven = trustedGiven || f.Name == "trusted" })
+	var trusted *trustedSet
+	if trustedGiven {
+		var terr *cliError
+		if trusted, terr = loadTrusted(*trustedSpec); terr != nil {
+			return terr
+		}
 	}
 	priv, cerr := loadKey(*keyPath)
 	if cerr != nil {
@@ -135,10 +145,22 @@ func cmdApprove(args []string, s streams) error {
 		return fail("the envelope already has the maximum number of signatures", "署名数が上限に達しています")
 	}
 
+	if trusted != nil {
+		if cerr := trusted.verifyExisting(env); cerr != nil {
+			return cerr
+		}
+	}
+
 	// Show exactly what will be enforced: the parsed policy and its hash.
 	fmt.Fprintf(s.out, "%s\n", strings.TrimRight(pol.Render(), "\n"))
 	fmt.Fprintf(s.out, "\npolicy hash: %s\n", policyHash(env.Payload))
-	fmt.Fprintf(s.out, "signatures so far (not checked here, the proxy checks them): %d\n", len(env.Signatures))
+	if trusted != nil {
+		fmt.Fprintf(s.out, "signatures so far (verified against -trusted): %d\n", len(env.Signatures))
+	} else {
+		fmt.Fprintf(s.out, "signatures so far (not verified here): %d\n", len(env.Signatures))
+		fmt.Fprint(s.err, "warning: the existing signatures were not verified; use -trusted <public keys> to check them before signing\n"+
+			"警告: 既存の署名は検証されていません。署名の前に -trusted <公開鍵> で確認できます\n")
+	}
 	for _, sg := range env.Signatures {
 		fmt.Fprintf(s.out, "  signed by key %s\n", sg.KeyID)
 	}

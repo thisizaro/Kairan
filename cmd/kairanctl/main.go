@@ -9,7 +9,7 @@
 //	kairanctl keygen   -name NAME [-dir DIR]
 //	kairanctl policy new -tenant ID [-version N] [-validity 72h] [-out FILE]
 //	kairanctl sign     -key NAME.key -in payload.json -out envelope.json
-//	kairanctl approve  -key NAME.key -in envelope.json [-out FILE] [-yes]
+//	kairanctl approve  -key NAME.key -in envelope.json [-out FILE] [-yes] [-trusted PUB,PUB,...]
 //
 // Exit codes: 0 success, 1 the command was refused or failed, 2 bad usage.
 // Errors are printed in English and Japanese (PRD J7).
@@ -42,7 +42,7 @@ const (
   kairanctl keygen   -name NAME [-dir DIR]
   kairanctl policy new -tenant ID [-version N] [-validity 72h] [-out FILE]
   kairanctl sign     -key NAME.key -in payload.json -out envelope.json
-  kairanctl approve  -key NAME.key -in envelope.json [-out FILE] [-yes]
+  kairanctl approve  -key NAME.key -in envelope.json [-out FILE] [-yes] [-trusted PUB,PUB,...]
 `
 )
 
