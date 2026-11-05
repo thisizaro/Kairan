@@ -624,7 +624,7 @@ func (a *Agent) Run(ctx context.Context) error    // poll + status loops until c
 ```
 
 ### `cmd/kairan-cp` · lane C
-- **Responsibility:** Thin main: flags `-config cp.json -data DIR -addr :8080`; wiring; graceful shutdown on SIGTERM.
+- **Responsibility:** Thin main: flags `-config cp.json`, `-admin-token-file FILE` (or `KCP_ADMIN_TOKEN_FILE` / `KCP_ADMIN_TOKEN`; never a flag value) and `-check`; `cp.json` holds `listen`, `data_dir`, metrics listener, TLS or `allow_plaintext`, admin keys and threshold, proxy enrollments as `token_sha256` (C-D9, M-D54); wiring; graceful shutdown on SIGTERM/SIGINT.
 - **Must uphold:** No logic.
 
 ### `cmd/kairan-proxy` · lane P
