@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="refresh" content="10">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kairan fleet status - bank-a</title>
+<link rel="stylesheet" href="static/fleet.css">
+</head>
+<body>
+<header>
+<h1>Kairan fleet status</h1>
+<p><a href="?lang=ja&amp;tenant=bank-a" hreflang="ja" lang="ja">日本語</a></p>
+<dl class="meta">
+<dt>Tenant</dt><dd>bank-a</dd>
+<dt>Generated at</dt><dd>2026-11-05 12:00:00 JST / 2026-11-05 03:00:00 UTC</dd>
+</dl>
+<p class="note">Refreshes every 10 seconds.</p>
+</header>
+<main>
+<section>
+<h2>Summary</h2>
+<ul class="stats">
+<li class="stat"><span class="n">4</span> Proxies</li>
+<li class="stat"><span class="n">2</span> Healthy</li>
+<li class="stat alarm"><span class="n">1</span> Stale</li>
+<li class="stat alarm"><span class="n">1</span> Lost</li>
+<li class="stat alarm"><span class="n">1</span> Tampered</li>
+<li class="stat alarm"><span class="n">1</span> Safe mode</li>
+<li class="stat alarm"><span class="n">1</span> Clock untrusted</li>
+</ul>
+</section>
+<section>
+<h2>Rollout</h2>
+<dl class="meta">
+<dt>Version</dt><dd>8</dd>
+<dt>Phase</dt><dd class="phase-canary">Canary</dd>
+</dl>
+</section>
+<section>
+<h2>Proxies</h2>
+<table>
+<thead><tr>
+<th scope="col">Proxy</th>
+<th scope="col">Group</th>
+<th scope="col">Health</th>
+<th scope="col">State</th>
+<th scope="col">Desired version</th>
+<th scope="col">Applied version</th>
+<th scope="col">Drift</th>
+<th scope="col">Policy hash</th>
+<th scope="col">Last seen</th>
+<th scope="col">Last error</th>
+</tr></thead>
+<tbody>
+<tr class="health-lost">
+<th scope="row">px-main-2</th>
+<td>main</td>
+<td class="health-lost">Lost</td>
+<td class="state-tampered">Tampered (deny all)</td>
+<td>7</td>
+<td>-</td>
+<td class="drift-behind">7 behind</td>
+<td><code>-</code></td>
+<td>2026-11-05 10:00:00 JST<br>2026-11-05 01:00:00 UTC</td>
+<td><code>tampered</code> The stored policy was tampered with</td>
+</tr>
+<tr class="health-stale">
+<th scope="row">px-main-1</th>
+<td>main</td>
+<td class="health-stale">Stale</td>
+<td class="state-enforcing">Enforcing</td>
+<td>7</td>
+<td>6</td>
+<td class="drift-behind">1 behind</td>
+<td><code>cccccccccccc</code></td>
+<td>2026-11-05 11:59:15 JST<br>2026-11-05 02:59:15 UTC</td>
+<td>none</td>
+</tr>
+<tr class="health-healthy">
+<th scope="row">px-canary-1</th>
+<td>canary</td>
+<td class="health-healthy">Healthy</td>
+<td class="state-enforcing">Enforcing</td>
+<td>8</td>
+<td>8</td>
+<td class="drift-sync">in sync</td>
+<td><code>bbbbbbbbbbbb</code></td>
+<td>2026-11-05 11:59:55 JST<br>2026-11-05 02:59:55 UTC</td>
+<td>none</td>
+</tr>
+<tr class="health-healthy">
+<th scope="row">px-main-3</th>
+<td>main</td>
+<td class="health-healthy">Healthy</td>
+<td class="state-safe_mode">Safe mode</td>
+<td>7</td>
+<td>7</td>
+<td class="drift-sync">in sync</td>
+<td><code>aaaaaaaaaaaa</code></td>
+<td>2026-11-05 11:59:57 JST<br>2026-11-05 02:59:57 UTC</td>
+<td><code>clock_untrusted</code> The clock cannot be trusted (v8)</td>
+</tr>
+</tbody>
+</table>
+</section>
+</main>
+</body>
+</html>
