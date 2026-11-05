@@ -476,7 +476,7 @@ const CanaryGroup wire.ID = "canary"
 - **Must uphold:** Atomic writes (temp, fsync, rename). Never stores payload beyond the signed envelope. Safe for concurrent use. The timeline keeps each report's `log_seq` and `log_head` (M-D35).
 ```go
 type Store interface {
-    PutEnvelope(env wire.Envelope, v trust.Verified) error  // wire.ErrConflict if the version exists
+    PutEnvelope(env wire.Envelope, m EnvelopeMeta) error   // EnvelopeMeta{Tenant, Version, Hash} filled from trust.Verified by cp/api (M-D41); conflict if the version exists
     Envelope(tenant wire.ID, version uint64) (wire.Envelope, error)
     PutRollout(r rollout.Rollout) error
     Rollout(tenant wire.ID) (rollout.Rollout, bool, error)
