@@ -42,6 +42,8 @@ break:
 	@mkdir -p $(BREAK_BIN); \
 	if [ -d cmd/kairanctl ]; then go build -o $(BREAK_BIN)/kairanctl ./cmd/kairanctl && export KAIRANCTL_BIN=$(BREAK_BIN)/kairanctl; fi; \
 	if [ -d cmd/fakemcp ]; then go build -o $(BREAK_BIN)/fakemcp ./cmd/fakemcp && export FAKEMCP_BIN=$(BREAK_BIN)/fakemcp; fi; \
+	if [ -d cmd/kairan-cp ]; then go build -o $(BREAK_BIN)/kairan-cp ./cmd/kairan-cp && export CP_BIN=$(BREAK_BIN)/kairan-cp; fi; \
+	if [ -d cmd/kairan-proxy ]; then go build -o $(BREAK_BIN)/kairan-proxy ./cmd/kairan-proxy && export PROXY_BIN=$(BREAK_BIN)/kairan-proxy; fi; \
 	if ! find test/break -name '*_test.go' -print -quit 2>/dev/null | grep -q .; then echo "break: no break tests yet"; exit 0; fi; \
 	rc=0; go test -race -count=1 -v ./test/break/... >$(BREAK_BIN)/break.log 2>&1 || rc=$$?; \
 	grep -E '^(ok|FAIL)[[:space:]]' $(BREAK_BIN)/break.log || true; \
