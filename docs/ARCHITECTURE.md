@@ -433,7 +433,7 @@ type Verified struct { Policy *policy.Policy; Hash wire.Hash; Signers []wire.Has
 func PAE(payloadType string, payload []byte) []byte
 func KeyID(pub ed25519.PublicKey) wire.Hash
 func Sign(env *wire.Envelope, priv ed25519.PrivateKey)  // appends one signature over PAE
-// Verify: shape, payload type, >= Threshold valid signatures from distinct trusted keys, Parse, tenant.
+// Verify: root floor, payload type, shape, >= Threshold valid signatures from distinct trusted keys, Parse, tenant.
 // No version or expiry check (used at boot to re-check the stored envelope).
 func Verify(env wire.Envelope, root Root) (Verified, wire.ErrorCode, error)
 // Accept: Verify + version > have (I2) + not expired at now (skew <= 5m tolerated). Used for new envelopes,
