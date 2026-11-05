@@ -85,6 +85,10 @@ type TimelineEntry struct {
 	PolicyHash      Hash   `json:"policy_hash"`
 	FirstSeenUnixMs int64  `json:"first_seen_unix_ms"`
 	LastSeenUnixMs  int64  `json:"last_seen_unix_ms"`
+	// Apply-log anchor last reported in this period (M-D35, M-D41): kairanctl evidence flags a
+	// seq or head regression against the proxy's local log. Zero/empty when none was reported.
+	LogSeq  uint64 `json:"log_seq,omitempty"`
+	LogHead Hash   `json:"log_head,omitempty"`
 }
 
 // TimelineView answers GET PathTimeline?tenant=.
