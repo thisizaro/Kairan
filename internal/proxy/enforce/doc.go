@@ -13,8 +13,10 @@
 //  2. POST bodies must be application/json (charset utf-8 only), not
 //     Content-Encoded, at most 1 MiB. The body is read whole, then scanned
 //     strictly (scan.go): one object, no batch, no duplicate keys, no
-//     non-lowercase or escaped keys at the envelope and in params, exact
-//     method spelling. Anything else is a logged deny (HTTP 400, 413 or 415);
+//     non-lowercase or escaped keys at the envelope and in params, a method
+//     that matches ^[A-Za-z0-9_./-]{1,128}$ byte for byte (anything else,
+//     including control or invisible characters, is rejected as an invalid
+//     request and never forwarded), exact method spelling. Anything else is a logged deny (HTTP 400, 413 or 415);
 //     nothing reaches the upstream.
 //  3. tools/call is judged against the one Active policy loaded for the call
 //     and recorded (role, tool, verdict, version, hash) before it is
@@ -30,7 +32,10 @@
 //
 // The proxy forwards exactly the bytes it inspected, with the agent's own
 // credentials removed. Requests always go to the configured upstream URL; the
-// path and query of the agent's request are not used.
+// path and query of the agent's request are not used. The upstream client
+// never follows a redirect, and a 3xx answer is an upstream error to the agent
+// (502, no Location, no body), so the request body is never sent to another
+// host (Q-D19).
 //
 // # What is logged
 //

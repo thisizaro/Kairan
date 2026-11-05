@@ -123,7 +123,9 @@ func (w *world) writeConfig() string {
 }
 
 type running struct {
-	addr   string
+	addr    string
+	metrics string // local listener address, "" if not configured
+
 	cancel context.CancelFunc
 	done   chan error
 	stderr *syncBuf
@@ -135,7 +137,7 @@ func (w *world) start() *running {
 	r := &running{cancel: cancel, done: make(chan error, 1), stderr: &syncBuf{}}
 	ready := make(chan string, 1)
 	go func() {
-		r.done <- run(ctx, []string{"-config", w.writeConfig()}, r.stderr, func(a string) { ready <- a })
+		r.done <- runLocal(ctx, []string{"-config", w.writeConfig()}, r.stderr, func(a string) { ready <- a }, func(a string) { r.metrics = a })
 	}()
 	select {
 	case r.addr = <-ready:

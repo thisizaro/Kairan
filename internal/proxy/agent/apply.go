@@ -177,14 +177,27 @@ func (a *Agent) untilExpiry() (d time.Duration, ok bool) {
 type Snapshot struct {
 	State               wire.ProxyState
 	AppliedVersion      uint64
+	PolicyHash          wire.Hash // hash of the policy in force, "" if none
+	LogSeq              uint64    // apply-log anchor, as in the status report
+	LogHead             wire.Hash
 	ClockUntrusted      bool
 	ClockUntrustedCount uint64
 }
 
-// Snapshot returns the agent's current state for metrics.
+// Snapshot returns the agent's current state for the local self view and
+// metrics. It carries wire types only (I4).
 func (a *Agent) Snapshot() Snapshot {
 	un, n := a.cfg.Guard.Untrusted(), a.cfg.Guard.UntrustedCount()
+	var seq uint64
+	var head wire.Hash
+	if a.al != nil {
+		seq, head = a.al.Head()
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return Snapshot{State: a.st8, AppliedVersion: a.appliedVersionLocked(), ClockUntrusted: un, ClockUntrustedCount: n}
+	s := Snapshot{State: a.st8, AppliedVersion: a.appliedVersionLocked(), LogSeq: seq, LogHead: head, ClockUntrusted: un, ClockUntrustedCount: n}
+	if a.view != nil {
+		s.PolicyHash = a.view.active.Hash
+	}
+	return s
 }

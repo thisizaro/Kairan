@@ -94,6 +94,8 @@
 // envelopes_rejected from agent_apply_rejected. Agent counters are
 // agent_apply_ok, agent_apply_rejected, agent_poll_errors,
 // agent_status_errors, agent_policy_expired and agent_boot_tampered.
-// Agent.Snapshot gives the gauges (state, applied version, clock untrusted)
-// for the local metrics listener (P-09).
+// Agent.Snapshot gives the gauges and the self view (state, applied version,
+// policy hash, apply-log seq and head, clock untrusted) for the local
+// listener of cmd/kairan-proxy (P-09); the hash and head are the same values
+// the status report carries.
 package agent
