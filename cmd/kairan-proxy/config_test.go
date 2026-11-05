@@ -198,6 +198,7 @@ func TestParseConfigRejects(t *testing.T) {
 		{"empty api_keys", goodConfig(map[string]string{"api_keys": "{}"}), "api_keys"},
 		{"empty api key", goodConfig(map[string]string{"api_keys": `{"":"sales"}`}), "api_keys"},
 		{"empty role", goodConfig(map[string]string{"api_keys": `{"k":""}`}), "api_keys"},
+		{"role not an ID", goodConfig(map[string]string{"api_keys": `{"k":"Sales_Team"}`}), "api_keys"},
 		{"api key with space", goodConfig(map[string]string{"api_keys": `{"a b":"sales"}`}), "api_keys"},
 		{"api key with newline", goodConfig(map[string]string{"api_keys": `{"a\nb":"sales"}`}), "api_keys"},
 		{"role not string", goodConfig(map[string]string{"api_keys": `{"k":1}`}), "config"},

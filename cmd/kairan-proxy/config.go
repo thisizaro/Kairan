@@ -254,8 +254,8 @@ func (fc *fileConfig) check() (*Config, error) {
 		return bad("api_keys", "required, an object of API key to role")
 	}
 	for k, role := range fc.APIKeys {
-		if k == "" || role == "" || !printable(k) || !printable(role) {
-			return bad("api_keys", "keys and roles must be non-empty, without spaces or control characters")
+		if k == "" || !printable(k) || !wire.ID(role).Valid() {
+			return bad("api_keys", "keys must be non-empty without spaces or control characters; roles must be IDs (1-63 of a-z, 0-9, -)")
 		}
 	}
 	c.APIKeys = fc.APIKeys

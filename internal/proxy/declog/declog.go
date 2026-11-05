@@ -11,7 +11,6 @@ import (
 	"sync"
 	"syscall"
 	"time"
-	"unicode/utf8"
 
 	"kairan/internal/policy"
 	"kairan/internal/proxy/enforce"
@@ -28,7 +27,6 @@ const (
 const (
 	DefaultMaxBytes = 10 << 20
 	DefaultKeep     = 5
-	maxRoleLen      = 256
 	maxLineLen      = 2048 // a real line is about 250 bytes
 )
 
@@ -251,7 +249,7 @@ func validate(r enforce.Record) error {
 	switch {
 	case r.Time.Year() < 0 || r.Time.Year() > 9999:
 		return errors.New("declog: time out of range")
-	case len(r.Role) > maxRoleLen || !utf8.ValidString(r.Role):
+	case !wire.ID(r.Role).Valid():
 		return errors.New("declog: bad role")
 	case !validTool(r.Tool):
 		return errors.New("declog: bad tool name")
@@ -312,7 +310,7 @@ func encode(r enforce.Record) ([]byte, error) {
 
 // Decode reads one line as written by Record (a trailing newline is
 // optional). It is strict: exactly the eight fields, each once, in lowercase,
-// a UTC time, and values that pass the same checks Record applies.
+// none of them null, a UTC time, and values that pass the same checks Record applies.
 func Decode(b []byte) (enforce.Record, error) {
 	bad := func(why string) (enforce.Record, error) {
 		return enforce.Record{}, errors.New("declog: malformed line: " + why)
@@ -358,7 +356,16 @@ func Decode(b []byte) (enforce.Record, error) {
 		default:
 			return bad("unknown key")
 		}
-		if err := dec.Decode(dst); err != nil {
+		var raw json.RawMessage
+		if err := dec.Decode(&raw); err != nil {
+			return bad("bad value for " + key)
+		}
+		// encoding/json would read null as the zero value (a deny at
+		// version 0); a line Record wrote never holds one.
+		if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			return bad("null for " + key)
+		}
+		if err := json.Unmarshal(raw, dst); err != nil {
 			return bad("bad value for " + key)
 		}
 	}
