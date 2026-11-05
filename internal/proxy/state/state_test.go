@@ -4,8 +4,28 @@ import (
 	"math/rand"
 	"testing"
 
+	"kairan/internal/policy"
 	"kairan/internal/wire"
 )
+
+// AllowsDecision must agree with Allows on every Decision the policy can give.
+func TestAllowsDecision(t *testing.T) {
+	for _, s := range allStates {
+		for _, mode := range []SafeMode{ReadOnly, DenyAll, "", "wide_open"} {
+			for _, allowed := range []bool{false, true} {
+				for _, c := range []policy.Class{0, policy.ClassR, policy.ClassW, policy.ClassX, 'r'} {
+					d := policy.Decision{Allowed: allowed, Class: c, Rule: "x"}
+					if got, want := AllowsDecision(s, d, mode), Allows(s, allowed, byte(c), mode); got != want {
+						t.Errorf("AllowsDecision(%s,%+v,%q) = %v, want %v", s, d, mode, got, want)
+					}
+				}
+			}
+		}
+	}
+	if AllowsDecision(wire.StateEnforcing, policy.Decision{}, ReadOnly) {
+		t.Error("zero Decision allowed")
+	}
+}
 
 var allEvents = []Event{BootNoPolicy, BootTampered, BootValid, BootExpired, Applied, Rejected, Expired}
 
