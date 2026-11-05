@@ -243,7 +243,7 @@ func TestLoadNotRegularFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(real, s.Path()); err != nil {
-		t.Skip("symlinks unavailable")
+		t.Fatalf("symlink: %v", err)
 	}
 	if _, found, err := s.Load(); !errors.Is(err, ErrCorrupt) || !found {
 		t.Fatalf("symlink: found=%v err=%v, want ErrCorrupt", found, err)
