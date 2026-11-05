@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -304,49 +305,52 @@ func TestCrossCheckEmptyLogAndNoTimeline(t *testing.T) {
 func TestCrossCheckDropped(t *testing.T) {
 	dir := t.TempDir()
 	path, es := goodLog(t, dir, "p1.log")
-	for name, dropped := range map[string]string{
-		"number": `3`,
-		"map":    `{"bank-a-p1":3}`,
+	withDropped := func(d map[wire.ID]uint64) *fakeCP {
+		cp := newFakeCP(t, false)
+		cp.timeline = func(w http.ResponseWriter, tenant string) {
+			writeJSON(w, 200, wire.TimelineView{Tenant: wire.ID(tenant), Entries: cleanTimeline(es), Dropped: d})
+		}
+		return cp
+	}
+	code, out, errb := evid(t, withDropped(map[wire.ID]uint64{"bank-a-p1": 3, "bank-a-p2": 4}), "-applylog", "bank-a-p1="+path)
+	if code != 0 {
+		t.Fatalf("exit %d\n%s\n%s", code, out, errb)
+	}
+	for _, want := range []string{"WARNING [dropped]", "7 earlier", "proxy bank-a-p1: 3 dropped", "proxy bank-a-p2: 4 dropped"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("lacks %q\n%s", want, out)
+		}
+	}
+	// Without logs the warning still shows, and the exit code stays 0.
+	if code, out, _ := evid(t, withDropped(map[wire.ID]uint64{"bank-a-p1": 1})); code != 0 || !strings.Contains(out, "1 earlier") {
+		t.Errorf("no logs: exit %d\n%s", code, out)
+	}
+	// Absent, empty and zero counts are silent.
+	for _, d := range []map[wire.ID]uint64{nil, {}, {"bank-a-p1": 0}} {
+		if code, out, _ := evid(t, withDropped(d)); code != 0 || strings.Contains(out, "dropped") {
+			t.Errorf("%v: exit %d\n%s", d, code, out)
+		}
+	}
+	// A bare number (the old local guess) and bad proxy IDs are refused.
+	for name, raw := range map[string]string{
+		"integer":    `3`,
+		"bad id":     `{"bad id":1}`,
+		"escape id":  `{"p\u001b[2J":1}`,
+		"negative":   `{"bank-a-p1":-1}`,
+		"fractional": `{"bank-a-p1":1.5}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			cp := newFakeCP(t, false)
 			cp.timeline = func(w http.ResponseWriter, tenant string) {
-				body := struct {
+				writeJSON(w, 200, struct {
 					wire.TimelineView
 					Dropped rawJSON `json:"dropped"`
-				}{wire.TimelineView{Tenant: wire.ID(tenant), Entries: cleanTimeline(es)}, rawJSON(dropped)}
-				writeJSON(w, 200, body)
+				}{wire.TimelineView{Tenant: wire.ID(tenant), Entries: cleanTimeline(es)}, rawJSON(raw)})
 			}
-			code, out, errb := evid(t, cp, "-applylog", "bank-a-p1="+path)
-			if code != 0 {
-				t.Fatalf("exit %d\n%s\n%s", code, out, errb)
-			}
-			if !strings.Contains(out, "WARNING [dropped]") || !strings.Contains(out, "3 earlier") {
-				t.Errorf("dropped not reported\n%s", out)
+			if code, out, e := evid(t, cp); code != 1 || !hasBoth(e) || strings.ContainsRune(out+e, 0x1b) {
+				t.Errorf("exit %d out %q err %q", code, out, e)
 			}
 		})
-	}
-	// Zero or absent: silent. Garbage: refused as a bad answer.
-	cp := newFakeCP(t, false)
-	cp.timeline = func(w http.ResponseWriter, tenant string) {
-		writeJSON(w, 200, struct {
-			wire.TimelineView
-			Dropped rawJSON `json:"dropped"`
-		}{wire.TimelineView{Tenant: wire.ID(tenant), Entries: cleanTimeline(es)}, `0`})
-	}
-	if code, out, _ := evid(t, cp); code != 0 || strings.Contains(out, "dropped") {
-		t.Errorf("zero dropped: exit %d\n%s", code, out)
-	}
-	for _, bad := range []string{`-1`, `"x"`, `[1]`, `{"p":-1}`, `{"bad id":1}`, `1.5`} {
-		cp.timeline = func(w http.ResponseWriter, tenant string) {
-			writeJSON(w, 200, struct {
-				wire.TimelineView
-				Dropped rawJSON `json:"dropped"`
-			}{wire.TimelineView{Tenant: wire.ID(tenant), Entries: cleanTimeline(es)}, rawJSON(bad)})
-		}
-		if code, _, e := evid(t, cp); code != 1 || !hasBoth(e) {
-			t.Errorf("dropped %s: exit %d err %q", bad, code, e)
-		}
 	}
 }
 
@@ -421,22 +425,28 @@ func FuzzParseLogArg(f *testing.F) {
 	})
 }
 
-func FuzzParseDropped(f *testing.F) {
-	for _, s := range []string{`3`, `0`, `{"p1":2}`, `-1`, `null`, `"x"`, `[]`, `1e3`, `{}`, `18446744073709551615`, `99999999999999999999`} {
+func FuzzCheckDropped(f *testing.F) {
+	for _, s := range []string{`{"p1":2}`, `{}`, `{"p1":0}`, `{"bad id":1}`, `{"a":18446744073709551615,"b":1}`, `{"a":-1}`, `3`} {
 		f.Add([]byte(s))
 	}
 	f.Fuzz(func(t *testing.T, b []byte) {
-		d, err := parseDropped(b)
+		var m map[wire.ID]uint64
+		if json.Unmarshal(b, &m) != nil {
+			return
+		}
+		d, err := checkDropped(m)
 		if err != nil {
 			return
 		}
-		if d.total == 0 && len(d.byProxy) != 0 {
-			t.Errorf("zero total with entries: %+v", d)
-		}
-		for id := range d.byProxy {
-			if !id.Valid() {
-				t.Errorf("invalid id kept: %q", id)
+		var sum uint64
+		for id, n := range d.byProxy {
+			if !id.Valid() || n == 0 {
+				t.Errorf("bad kept entry %q %d", id, n)
 			}
+			sum += n
+		}
+		if sum != d.total {
+			t.Errorf("total %d != sum %d", d.total, sum)
 		}
 	})
 }

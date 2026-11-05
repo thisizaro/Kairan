@@ -59,14 +59,14 @@ func cmdEvidenceExport(args []string, s streams) error {
 	if err != nil {
 		return err
 	}
-	var view timelineAnswer
+	var view wire.TimelineView
 	if _, cerr := cl.do("GET", wire.PathTimeline, url.Values{wire.QueryTenant: {*tenant}}, nil, &view); cerr != nil {
 		return cerr
 	}
-	if cerr := checkTimeline(view.TimelineView, *tenant); cerr != nil {
+	if cerr := checkTimeline(view, *tenant); cerr != nil {
 		return cerr
 	}
-	drop, derr := parseDropped(view.Dropped)
+	drop, derr := checkDropped(view.Dropped)
 	if derr != nil {
 		return badAnswer()
 	}

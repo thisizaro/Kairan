@@ -23,15 +23,12 @@ package main
 // but they are not a mismatch and do not change the exit code.
 
 import (
-	"bytes"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"math"
 	"sort"
-	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -43,68 +40,33 @@ import (
 // 190,000 entries).
 const maxApplyLogBytes = 64 << 20
 
-// timelineAnswer is the timeline response as kairanctl reads it: the wire
-// view plus the optional dropped count (M-D55). The field is a number (all
-// proxies together) or an object of proxy ID to number.
-type timelineAnswer struct {
-	wire.TimelineView
-	Dropped json.RawMessage `json:"dropped,omitempty"`
-}
-
 // dropped is how many earlier timeline entries the control plane discarded.
 type dropped struct {
 	total   uint64
 	byProxy map[wire.ID]uint64 // only non-zero counts
 }
 
-// parseDropped reads the dropped field. Absent, null and 0 mean none.
-func parseDropped(raw []byte) (dropped, error) {
+// checkDropped validates the dropped counts of the timeline answer (M-D55,
+// M-D56): proxy IDs must be valid (they are printed) and the sum must not
+// overflow. Zero counts are left out. wire.Decode has already refused
+// anything that is not an object of non-negative integers.
+func checkDropped(m map[wire.ID]uint64) (dropped, error) {
 	var d dropped
-	raw = bytes.TrimSpace(raw)
-	if len(raw) == 0 || string(raw) == "null" {
-		return d, nil
-	}
-	bad := errors.New("bad dropped count")
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.UseNumber()
-	var v any
-	if err := dec.Decode(&v); err != nil {
-		return dropped{}, bad
-	}
-	if _, err := dec.Token(); err != io.EOF {
-		return dropped{}, bad
-	}
-	switch x := v.(type) {
-	case json.Number:
-		n, err := strconv.ParseUint(x.String(), 10, 64)
-		if err != nil {
-			return dropped{}, bad
+	for id, n := range m {
+		if !id.Valid() {
+			return dropped{}, errors.New("bad dropped proxy ID")
 		}
-		d.total = n
-	case map[string]any:
-		for k, val := range x {
-			num, ok := val.(json.Number)
-			if !ok || !wire.ID(k).Valid() {
-				return dropped{}, bad
-			}
-			n, err := strconv.ParseUint(num.String(), 10, 64)
-			if err != nil {
-				return dropped{}, bad
-			}
-			if n == 0 {
-				continue
-			}
-			if d.total > math.MaxUint64-n {
-				return dropped{}, bad
-			}
-			d.total += n
-			if d.byProxy == nil {
-				d.byProxy = map[wire.ID]uint64{}
-			}
-			d.byProxy[wire.ID(k)] = n
+		if n == 0 {
+			continue
 		}
-	default:
-		return dropped{}, bad
+		if d.total > math.MaxUint64-n {
+			return dropped{}, errors.New("bad dropped count")
+		}
+		d.total += n
+		if d.byProxy == nil {
+			d.byProxy = map[wire.ID]uint64{}
+		}
+		d.byProxy[id] = n
 	}
 	return d, nil
 }
