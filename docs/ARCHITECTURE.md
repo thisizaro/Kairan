@@ -433,7 +433,7 @@ type Verified struct { Policy *policy.Policy; Hash wire.Hash; Signers []wire.Has
 func PAE(payloadType string, payload []byte) []byte
 func KeyID(pub ed25519.PublicKey) wire.Hash
 func Sign(env *wire.Envelope, priv ed25519.PrivateKey)  // appends one signature over PAE
-// Verify: shape, payload type, >= Threshold valid signatures from distinct trusted keys, Parse, tenant.
+// Verify: root floor, payload type, shape, >= Threshold valid signatures from distinct trusted keys, Parse, tenant.
 // No version or expiry check (used at boot to re-check the stored envelope).
 func Verify(env wire.Envelope, root Root) (Verified, wire.ErrorCode, error)
 // Accept: Verify + version > have (I2) + not expired at now (skew <= 5m tolerated). Used for new envelopes,
@@ -476,7 +476,7 @@ const CanaryGroup wire.ID = "canary"
 - **Must uphold:** Atomic writes (temp, fsync, rename). Never stores payload beyond the signed envelope. Safe for concurrent use. The timeline keeps each report's `log_seq` and `log_head` (M-D35).
 ```go
 type Store interface {
-    PutEnvelope(env wire.Envelope, v trust.Verified) error  // wire.ErrConflict if the version exists
+    PutEnvelope(env wire.Envelope, m EnvelopeMeta) error   // EnvelopeMeta{Tenant, Version, Hash} filled from trust.Verified by cp/api (M-D41); conflict if the version exists
     Envelope(tenant wire.ID, version uint64) (wire.Envelope, error)
     PutRollout(r rollout.Rollout) error
     Rollout(tenant wire.ID) (rollout.Rollout, bool, error)
@@ -607,7 +607,7 @@ func Verify(r io.Reader) (last Entry, n int, err error)   // used by kairanctl t
 - **Must uphold:** I1, I2, I4: verify via `trust`, version must beat the apply log, metadata-only reports (including `log_seq`, `log_head`), failures keep the current policy.
 - **Boot (M-D33):** see the boot rule in section 4. Apply order: Save, then Append.
 - **Expiry (M-D30, P-10):** every expiry check uses `effective_now = max(wall now, persisted high-water wall time, wall at apply + clock.Mono elapsed since apply)`. The high-water mark is persisted atomically at least every 60s and at shutdown. Wall more than 5 minutes behind the high-water mark: report `clock_untrusted` (ApplyError) and count it in a metric.
-- **Clients and TLS (M-D31):** status POST timeout 10s; poll client timeout = poll hold + 10s. TLS 1.2 minimum, system roots plus optional `ca_file`, never `InsecureSkipVerify` (G2 grep). Plain `http://` only when config sets `allow_plaintext: true` (Docker demo; LIMITATIONS).
+- **Clients and TLS (M-D31):** status POST timeout 10s; poll client timeout = `wire.PollClientTimeout` (45s; M-D40). TLS 1.2 minimum, system roots plus optional `ca_file`, never `InsecureSkipVerify` (G2 grep). Plain `http://` only when config sets `allow_plaintext: true` (Docker demo; LIMITATIONS).
 - **Metrics (M-D29, P-09):** on the proxy's local listener only: gauge `kairan_proxy_state` (one series per state, 1 for the current one), gauge `kairan_proxy_applied_version`, apply and reject counters. No hash label. Also counted: `clock_untrusted` (M-D30), decision-log write failures (M-D33), a TEST-ONLY trusted key (M-D37); those metric names are the owner's choice.
 ```go
 type Config struct {
