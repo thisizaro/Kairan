@@ -473,7 +473,7 @@ const CanaryGroup wire.ID = "canary"
 
 ### `internal/cp/store` · lane C
 - **Responsibility:** JSON-file storage: envelopes, rollouts, last status per proxy, timeline.
-- **Must uphold:** Atomic writes (temp, fsync, rename). Never stores payload beyond the signed envelope. Safe for concurrent use. The timeline keeps each report's `log_seq` and `log_head` (M-D35).
+- **Must uphold:** Atomic writes (temp, fsync, rename). Never stores payload beyond the signed envelope. Safe for concurrent use. The timeline keeps each report's `log_seq` and `log_head` (M-D35); a backwards anchor starts a new entry (M-D48); at most 256 entries per proxy, oldest dropped and counted in `TimelineView.Dropped` and `kairan_cp_timeline_dropped_total` (M-D55, M-D56).
 ```go
 type Store interface {
     PutEnvelope(env wire.Envelope, m EnvelopeMeta) error   // EnvelopeMeta{Tenant, Version, Hash} filled from trust.Verified by cp/api (M-D41); conflict if the version exists
