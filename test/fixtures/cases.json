@@ -1,0 +1,128 @@
+{
+  "root": {
+    "tenant": "bank-a",
+    "threshold": 2,
+    "trusted_keys": [
+      "TEST-ONLY-admin-a.pub",
+      "TEST-ONLY-admin-b.pub",
+      "TEST-ONLY-admin-c.pub"
+    ],
+    "now": "2026-11-05T12:00:00Z",
+    "skew_seconds": 120
+  },
+  "check_order": "shape (malformed) / payload type (payload_type) -\u003e signatures (threshold_not_met) -\u003e policy parse (malformed) -\u003e tenant (wrong_tenant) -\u003e version (version_not_newer) -\u003e expiry (expired)",
+  "cases": [
+    {
+      "name": "valid",
+      "file": "envelopes/valid.json",
+      "have": 1,
+      "want": "",
+      "why": "2 distinct trusted signatures, newer, unexpired"
+    },
+    {
+      "name": "valid-three-sigs",
+      "file": "envelopes/valid-three-sigs.json",
+      "have": 1,
+      "want": "",
+      "why": "3 of 3 trusted signatures"
+    },
+    {
+      "name": "valid-from-empty",
+      "file": "envelopes/valid-from-empty.json",
+      "have": 0,
+      "want": "",
+      "why": "first policy on a fresh proxy"
+    },
+    {
+      "name": "one-sig",
+      "file": "envelopes/one-sig.json",
+      "have": 1,
+      "want": "threshold_not_met",
+      "why": "only 1 signature, threshold is 2"
+    },
+    {
+      "name": "duplicate-key",
+      "file": "envelopes/duplicate-key.json",
+      "have": 1,
+      "want": "threshold_not_met",
+      "why": "same key twice counts once"
+    },
+    {
+      "name": "untrusted-second",
+      "file": "envelopes/untrusted-second.json",
+      "have": 1,
+      "want": "threshold_not_met",
+      "why": "outsider is not in the trust root"
+    },
+    {
+      "name": "flipped-sig",
+      "file": "envelopes/flipped-sig.json",
+      "have": 1,
+      "want": "threshold_not_met",
+      "why": "admin-b's signature bytes altered"
+    },
+    {
+      "name": "tampered-payload",
+      "file": "envelopes/tampered-payload.json",
+      "have": 1,
+      "want": "threshold_not_met",
+      "why": "payload changed after signing (one added space)"
+    },
+    {
+      "name": "short-sig",
+      "file": "envelopes/short-sig.json",
+      "have": 1,
+      "want": "malformed",
+      "why": "signature is not 64 bytes: shape check fails first"
+    },
+    {
+      "name": "wrong-payload-type",
+      "file": "envelopes/wrong-payload-type.json",
+      "have": 1,
+      "want": "payload_type",
+      "why": "validly signed, but not a Kairan policy"
+    },
+    {
+      "name": "malformed-policy",
+      "file": "envelopes/malformed-policy.json",
+      "have": 1,
+      "want": "malformed",
+      "why": "validly signed, but default is \"allow\""
+    },
+    {
+      "name": "wrong-tenant",
+      "file": "envelopes/wrong-tenant.json",
+      "have": 1,
+      "want": "wrong_tenant",
+      "why": "validly signed policy for city-b"
+    },
+    {
+      "name": "old-version",
+      "file": "envelopes/old-version.json",
+      "have": 2,
+      "want": "version_not_newer",
+      "why": "v1 offered to a proxy on v2 (rollback replay)"
+    },
+    {
+      "name": "same-version",
+      "file": "envelopes/same-version.json",
+      "have": 2,
+      "want": "version_not_newer",
+      "why": "v2 offered to a proxy already on v2"
+    },
+    {
+      "name": "expired",
+      "file": "envelopes/expired.json",
+      "have": 1,
+      "want": "expired",
+      "why": "expired a day before Now"
+    },
+    {
+      "name": "expired-within-skew",
+      "file": "envelopes/expired-within-skew.json",
+      "have": 1,
+      "want": "",
+      "why": "expired 1 minute before Now; skew is 2 minutes"
+    }
+  ]
+}
