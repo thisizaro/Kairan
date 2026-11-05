@@ -34,8 +34,15 @@ else
 endif
 
 # Break-pass attack tests (M-D17), written by lane Q against exported APIs. Also run by `test`.
+# Break tests run binaries black-box; build them here when the source exists in this checkout (M-D48).
+# Lane Q's sparse checkout has no cmd/ sources, so the Overseer runs `make break` on main or passes
+# KAIRANCTL_SRC_DIR / FAKEMCP_BIN explicitly.
+BREAK_BIN := $(CURDIR)/.break-bin
 break:
-	@if find test/break -name '*_test.go' -print -quit 2>/dev/null | grep -q .; then \
+	@mkdir -p $(BREAK_BIN); \
+	if [ -d cmd/kairanctl ]; then go build -o $(BREAK_BIN)/kairanctl ./cmd/kairanctl && export KAIRANCTL_BIN=$(BREAK_BIN)/kairanctl; fi; \
+	if [ -d cmd/fakemcp ]; then go build -o $(BREAK_BIN)/fakemcp ./cmd/fakemcp && export FAKEMCP_BIN=$(BREAK_BIN)/fakemcp; fi; \
+	if find test/break -name '*_test.go' -print -quit 2>/dev/null | grep -q .; then \
 	  go test -race -count=1 ./test/break/...; \
 	else echo "break: no break tests yet"; fi
 
