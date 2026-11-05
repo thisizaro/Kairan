@@ -528,9 +528,12 @@ func TestPromotingErrorThreshold(t *testing.T) {
 				if !next.Reason.Valid() || next.Reason == "" {
 					t.Fatalf("halted without reason: %q", next.Reason)
 				}
-				// Halted: others go back to Previous, never below, never above.
-				if des["main"] != 7 || des[rollout.CanaryGroup] != 8 {
-					t.Fatalf("halted desired = %v, want canary 8 / main 7", des)
+				// M-D44: a halt while Promoting freezes every group at Version.
+				if des["main"] != 8 || des[rollout.CanaryGroup] != 8 {
+					t.Fatalf("halted-while-promoting desired = %v, want canary 8 / main 8 (M-D44: freeze, never lower)", des)
+				}
+				if !next.Promoted {
+					t.Fatalf("halted by promotion errors but Promoted is false: %+v", next)
 				}
 			}
 		})
@@ -589,6 +592,15 @@ func TestTerminalPhasesNeverChange(t *testing.T) {
 				for g, v := range des {
 					if g == rollout.CanaryGroup && v != 8 || g != rollout.CanaryGroup && v != 7 {
 						t.Fatalf("halted desired wrong: %v", des)
+					}
+				}
+				// Same state with Promoted set (a halt during Promoting): all groups at Version.
+				rp := r
+				rp.Promoted = true
+				_, desP := rollout.Step(rp, f, t0.Add(100*time.Hour))
+				for g, v := range desP {
+					if v != 8 {
+						t.Fatalf("halted+promoted %s: group %q desired %d, want 8 (M-D44)", name, g, v)
 					}
 				}
 			} else {
@@ -768,16 +780,29 @@ func TestRandomScenarioInvariants(t *testing.T) {
 			}
 			// Non-canary groups only move beyond Previous in Promoting/Complete.
 			for g, v := range des {
-				if g != rollout.CanaryGroup && v > r.Previous && next.Phase != wire.PhasePromoting && next.Phase != wire.PhaseComplete {
+				if g != rollout.CanaryGroup && v > r.Previous && next.Phase != wire.PhasePromoting && next.Phase != wire.PhaseComplete && !(next.Phase == wire.PhaseHalted && next.Promoted) {
 					t.Fatalf("%s: group %q desired %d > previous %d while phase %q", label, g, v, r.Previous, next.Phase)
 				}
 				if v > r.Version && v > r.Previous {
 					t.Fatalf("%s: group %q desired %d above the rollout version %d", label, g, v, r.Version)
 				}
-				if old, ok := lastDesired[g]; ok && v < old && !(r.Phase == wire.PhasePromoting && next.Phase == wire.PhaseHalted) {
+				if old, ok := lastDesired[g]; ok && v < old {
 					t.Fatalf("%s: group %q desired went DOWN %d -> %d", label, g, old, v)
 				}
 				lastDesired[g] = v
+			}
+			// DesiredFor must agree with what Step returned (the fleet page shows DesiredFor).
+			for g, v := range des {
+				if dv := rollout.DesiredFor(next, g); dv != v {
+					t.Fatalf("%s: DesiredFor(next, %q) = %d but Step returned %d (phase %q promoted %v)", label, g, dv, v, next.Phase, next.Promoted)
+				}
+			}
+			// Promoted is only ever set on a halted rollout, and only by a halt out of Promoting.
+			if next.Promoted && (next.Phase != wire.PhaseHalted || r.Phase != wire.PhasePromoting && !r.Promoted) {
+				t.Fatalf("%s: Promoted=true after %q -> %q (was %q)", label, r.Phase, next.Phase, r.Phase)
+			}
+			if r.Promoted && !next.Promoted {
+				t.Fatalf("%s: Promoted flag cleared by Step", label)
 			}
 			// A halted rollout started invalid must stay halted; a rollout that was
 			// never given a good canary must not leave the canary phase.
@@ -833,11 +858,19 @@ func FuzzStepNeverPanicsNeverLowers(f *testing.F) {
 			px{id: "m1", group: "main", applied: applied, health: hl[int(hs>>2)%4], state: wire.StateEnforcing},
 		)
 		now := t0.Add(time.Duration(dt))
+		last := map[wire.ID]uint64{}
 		for i := 0; i < 3; i++ {
 			n, des := rollout.Step(r, f1, now)
 			for g, v := range des {
 				if v < n.Previous {
 					t.Fatalf("group %q desired %d < previous %d", g, v, n.Previous)
+				}
+				if old, ok := last[g]; ok && v < old {
+					t.Fatalf("group %q desired went down %d -> %d (M-D44) phase %q -> %q", g, old, v, r.Phase, n.Phase)
+				}
+				last[g] = v
+				if dv := rollout.DesiredFor(n, g); dv != v {
+					t.Fatalf("DesiredFor %d != Step %d for %q", dv, v, g)
 				}
 			}
 			if r.Phase == wire.PhaseHalted && n.Phase != wire.PhaseHalted {
@@ -943,5 +976,151 @@ func TestRolloutDrivenByRealFleetView(t *testing.T) {
 	}
 	if promotedAt < 60*time.Second || promotedAt > 80*time.Second {
 		t.Fatalf("promoted at %v, want within [60s, 80s] for dwell 60s", promotedAt)
+	}
+}
+
+// --- M-D44 / C-D6: Halted freezes, Promoted flag --------------------------
+
+// ARCH LLD rollout: "never lowers a group's desired version"; M-D44.
+func TestHaltInPromotingFreezesAtVersionAcrossLaterSteps(t *testing.T) {
+	r := promotingRollout(t)
+	bad := fv(canaryOK(8), ok("m1", "main", 7), ok("m2", "main", 7), ok("m3", "main", 7))
+	for i := range bad.Proxies[1:] {
+		bad.Proxies[i+1].LastError = &wire.ApplyError{Code: wire.ErrThreshold, Version: 8}
+	}
+	h, des := rollout.Step(r, bad, t0.Add(3*time.Minute))
+	if h.Phase != wire.PhaseHalted || !h.Promoted {
+		t.Fatalf("setup: want halted+promoted, got %+v", h)
+	}
+	if des["main"] != 8 || des[rollout.CanaryGroup] != 8 {
+		t.Fatalf("halt step desired = %v", des)
+	}
+	// Whatever the fleet does afterwards (everything recovers, everything lost, empty), desired stays 8.
+	for name, f := range map[string]wire.FleetView{
+		"recovered": fv(canaryOK(8), ok("m1", "main", 8)),
+		"all-lost":  fv(px{id: "c1", group: rollout.CanaryGroup, health: wire.HealthLost}, px{id: "m1", group: "main", health: wire.HealthLost}),
+		"new-group": fv(canaryOK(8), ok("e1", "edge", 0)),
+		"empty":     {},
+	} {
+		h2, d2 := rollout.Step(h, f, t0.Add(time.Hour))
+		if h2 != h {
+			t.Fatalf("%s: halted rollout changed: %+v -> %+v", name, h, h2)
+		}
+		for g, v := range d2 {
+			if v != 8 {
+				t.Fatalf("%s: group %q desired %d after halt-in-promoting, want 8 (frozen, M-D44)", name, g, v)
+			}
+		}
+	}
+	for _, g := range []wire.ID{"main", "edge", "", "canary", "never-seen"} {
+		if v := rollout.DesiredFor(h, g); v != 8 {
+			t.Fatalf("DesiredFor(halted+promoted, %q) = %d, want 8", g, v)
+		}
+	}
+}
+
+// C-D6: a halt in Canary keeps mains at Previous and does not set Promoted.
+func TestHaltInCanaryDoesNotSetPromoted(t *testing.T) {
+	r := rollout.Start(req(8, 60), 7, t0, 0)
+	f := fv(px{id: "c1", group: rollout.CanaryGroup, applied: 7, health: wire.HealthLost}, ok("m1", "main", 7))
+	h, des := rollout.Step(r, f, t0)
+	if h.Phase != wire.PhaseHalted {
+		t.Fatalf("lost canary did not halt: %+v", h)
+	}
+	if h.Promoted {
+		t.Fatal("Promoted set by a Canary-phase halt")
+	}
+	if des["main"] != 7 || des[rollout.CanaryGroup] != 8 {
+		t.Fatalf("desired = %v, want canary 8 main 7", des)
+	}
+	if rollout.DesiredFor(h, "main") != 7 || rollout.DesiredFor(h, rollout.CanaryGroup) != 8 {
+		t.Fatal("DesiredFor disagrees for halted-in-canary")
+	}
+}
+
+// C-D6: malformed halts never raise a group.
+func TestMalformedHaltNeverRaisesAnyGroup(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		req  wire.RolloutRequest
+		prev uint64
+	}{
+		{"same-version", req(7, 0), 7},
+		{"older", req(3, 0), 7},
+		{"zero", req(0, 0), 0},
+		{"wrong-tenant", wire.RolloutRequest{Tenant: "BAD TENANT", Version: 9}, 7},
+		{"empty-tenant", wire.RolloutRequest{Version: 9}, 7},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r := rollout.Start(c.req, c.prev, t0, time.Minute)
+			if r.Phase != wire.PhaseHalted {
+				t.Fatalf("not halted: %+v", r)
+			}
+			if r.Promoted {
+				t.Fatalf("malformed halt has Promoted set: %+v", r)
+			}
+			for _, g := range []wire.ID{"main", "edge", rollout.CanaryGroup} {
+				if v := rollout.DesiredFor(r, g); v > c.prev {
+					t.Fatalf("malformed rollout raised group %q to %d (previous %d)", g, v, c.prev)
+				}
+			}
+			f := fv(canaryOK(9), ok("m1", "main", 9))
+			_, des := rollout.Step(r, f, t0.Add(time.Hour))
+			for g, v := range des {
+				if v > c.prev {
+					t.Fatalf("Step of malformed rollout raised %q to %d", g, v)
+				}
+			}
+		})
+	}
+}
+
+// A hand-built (corrupt file) rollout: Promoted outside Halted must not widen anything.
+func TestPromotedFlagOnlyMattersWhenHalted(t *testing.T) {
+	for _, ph := range []wire.RolloutPhase{wire.PhaseCanary, wire.PhaseComplete, wire.PhasePromoting, "", "bogus"} {
+		r := rollout.Rollout{Tenant: "bank-a", Version: 8, Previous: 7, Phase: ph, Dwell: dwell, Promoted: true}
+		without := r
+		without.Promoted = false
+		for _, g := range []wire.ID{"main", rollout.CanaryGroup} {
+			if a, b := rollout.DesiredFor(r, g), rollout.DesiredFor(without, g); a != b {
+				t.Fatalf("phase %q group %q: Promoted changed DesiredFor %d -> %d outside Halted", ph, g, b, a)
+			}
+		}
+	}
+}
+
+// "Never below Previous" even for a corrupt Halted+Promoted with Version < Previous.
+func TestDesiredForNeverBelowPreviousOrAboveMax(t *testing.T) {
+	phases := []wire.RolloutPhase{wire.PhaseCanary, wire.PhasePromoting, wire.PhaseHalted, wire.PhaseComplete, "", "x"}
+	for _, ph := range phases {
+		for _, prom := range []bool{false, true} {
+			for _, vp := range [][2]uint64{{8, 7}, {7, 8}, {0, 0}, {math.MaxUint64, 0}, {0, math.MaxUint64}, {math.MaxUint64, math.MaxUint64}} {
+				r := rollout.Rollout{Tenant: "bank-a", Version: vp[0], Previous: vp[1], Phase: ph, Promoted: prom}
+				for _, g := range []wire.ID{"main", rollout.CanaryGroup, ""} {
+					v := rollout.DesiredFor(r, g)
+					if v < r.Previous {
+						t.Fatalf("%+v group %q: DesiredFor %d below Previous", r, g, v)
+					}
+					if v > r.Version && v > r.Previous {
+						t.Fatalf("%+v group %q: DesiredFor %d above both Version and Previous", r, g, v)
+					}
+				}
+			}
+		}
+	}
+}
+
+// A halt in Promoting reached through Step from every error shape sets Promoted exactly once and DesiredFor agrees.
+func TestPromotingHaltSetsPromotedForEveryErrorCode(t *testing.T) {
+	for _, c := range []wire.ErrorCode{wire.ErrThreshold, wire.ErrExpired, wire.ErrMalformed, wire.ErrPersist, wire.ErrNotNewer} {
+		r := promotingRollout(t)
+		f := fv(canaryOK(8), px{id: "m1", group: "main", applied: 7, health: wire.HealthHealthy, state: wire.StateEnforcing, errv: 8, errc: c})
+		h, des := rollout.Step(r, f, t0.Add(3*time.Minute))
+		if h.Phase != wire.PhaseHalted {
+			t.Fatalf("code %q: 1 of 1 failing main did not halt", c)
+		}
+		if !h.Promoted || des["main"] != 8 || rollout.DesiredFor(h, "main") != 8 {
+			t.Fatalf("code %q: Promoted=%v desired=%v", c, h.Promoted, des)
+		}
 	}
 }
