@@ -331,7 +331,7 @@ func (g *ClockGuard) Run(ctx context.Context, log *slog.Logger) error {
 			return g.Save()
 		case <-g.clk.After(HighWaterInterval):
 			if err := g.Save(); err != nil && log != nil {
-				log.Error("clock high-water save failed", "err", err)
+				say(log, slog.LevelError, evClockSave, "err", err)
 			}
 		}
 	}
