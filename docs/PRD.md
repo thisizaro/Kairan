@@ -48,7 +48,7 @@ No Tumiki clone (no PII masking, virtual-MCP builder, connectors). Not a full MC
 | ID | Requirement |
 |---|---|
 | J1 | Heartbeats/acks carry only versions, hashes, health, counters. User IDs, if any, are HMAC'd. A canary-secret test proves no leak. |
-| J2 | Proxies make **outbound HTTPS only**; HTTP/1.1 long-poll; honor `HTTPS_PROXY`. No inbound ports. |
+| J2 | Proxies make **outbound HTTPS only**; HTTP/1.1 long-poll; honor `HTTPS_PROXY`. No inbound connections from outside the customer network (the proxy's MCP and metrics listeners are inbound inside it; M-D36). |
 | J3 | **Offline mode:** a signed bundle can be imported from a file and passes the same signature, version and expiry checks. |
 | J4 | **2-of-N signatures**; approver signs on their own machine; the control plane distributes but cannot create a valid policy. |
 | J5 | Local **hash-chained apply log**; each decision stamped with policy version + hash; export shows "proxy P enforced version V (hash H) from T1 to T2" in JST + UTC. |
@@ -77,7 +77,7 @@ No Tumiki clone (no PII masking, virtual-MCP builder, connectors). Not a full MC
 | I3 | No failure (control plane down, network cut, bad policy, disk error) ever makes permissions wider |
 | I4 | No payload, prompt or canary secret ever reaches the control plane |
 | I5 | Every allow/deny decision is recorded with the exact policy version and hash that made it |
-| I6 | The apply log's hash chain detects any edit, deletion or reordering |
+| I6 | The apply log's hash chain detects any edit, deletion or reordering; tail truncation is detected by comparison with the control-plane anchor (`log_seq`, `log_head`) (M-D36) |
 
 ## 9. Metrics (all produced by `make bench` into RESULTS.md: commit, machine, >= 5 runs, median and spread; real and simulated labeled separately)
 | # | Metric | Measured by | Target |
@@ -93,7 +93,7 @@ No Tumiki clone (no PII masking, virtual-MCP builder, connectors). Not a full MC
 
 ## 10. Acceptance criteria (definition of done)
 1. Invariants I1-I6 each have passing tests (unit, fuzz where applicable, `-race`).
-2. Chaos S1-S10 pass automatically (defined in ARCHITECTURE.md §11); S11 (k3d) is a stretch.
+2. Chaos S1-S8, S10 and S12 pass automatically (defined in ARCHITECTURE.md §11); S9 (`HTTPS_PROXY`) and S13 (reconnect storm) are optional; S11 (k3d) is a stretch.
 3. `make ci` green on main: vet, staticcheck, `test -race`, fuzz smoke, JSONL checks, govulncheck.
 4. RESULTS.md generated from a clean checkout by `make bench`; M5, M6, M8 meet their targets; other results reported honestly.
 5. Go stdlib only, unless a decision entry justifies an addition.

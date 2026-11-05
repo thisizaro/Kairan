@@ -251,7 +251,7 @@ kairan/
 ├── internal/   wire/ clock/ obs/ policy/ trust/
 │               cp/{api,store,web,fleet,rollout}/
 │               proxy/{enforce,agent,store,applylog,state}/
-├── test/       e2e/ (chaos S1-S11)  break/<pkg>/ (break-pass attack tests, M-D17)
+├── test/       e2e/ (chaos S1-S13)  break/<pkg>/ (break-pass attack tests, M-D17)
 │               fixtures/ (TEST-ONLY keys, golden envelopes)
 ├── bench/      scripts + RESULTS.md generator
 ├── deploy/     compose/  k8s/ (stretch)
@@ -273,7 +273,7 @@ flowchart LR
         LT["Lane T - dev<br/>policy + trust + kairanctl"]
         LP["Lane P - dev<br/>proxy + fakemcp"]
         LC["Lane C - dev<br/>control plane + fleet page"]
-        LQ["Lane Q - black-box tester<br/>break passes, compose, chaos S1-S10<br/>from docs, wire and go doc only"]
+        LQ["Lane Q - black-box tester<br/>break passes, compose, chaos S1-S13<br/>from docs, wire and go doc only"]
     end
 
     subgraph P2["Phase 2: integrate and break it"]
@@ -643,20 +643,22 @@ func (a *Agent) Run(ctx context.Context) error    // poll + status loops until c
 - **Responsibility:** `-cp URL -n 1000 -tenant sim` runs N simulated proxies (real HTTP long-poll + status, same timing as `wire`), prints JSON results.
 - **Must uphold:** Always labeled simulated; uses only `wire` (black-box).
 
-## 11. Chaos scenarios S1-S11
+## 11. Chaos scenarios S1-S13
 
-Defined at G0 (M-D38) from the PRD invariants, metrics and THREATS rows, because the design spec they came from is not in this repository. Each runs against the compose stack (S9 with `kairan-sim`, S11 on k3d) and passes or fails automatically.
+S1-S11 follow the numbering of Aro's design spec (M-D50, superseding the G0 draft M-D38); S12 and S13 are additions kept from that draft. Each runs against the compose stack (S11 on k3d, S13 with `kairan-sim`) and passes or fails automatically. Required: S1-S8, S10, S12. Optional: S9, S13. Stretch: S11.
 
 | ID | Scenario | Pass when | Proves |
 |---|---|---|---|
-| S1 | **Control plane down** during mixed read/write traffic, then back | 0 calls wrongly allowed; proxies keep their applied version; all re-sync after restart | I3, G3, M5 |
-| S2 | **Rogue control plane** serves forged, 1-signature, wrong-tenant and older-version envelopes | 0 applied; applied version unchanged; reject reason reported | I1, I2, THREATS #1-#3 |
-| S3 | **Network cut** of one proxy (`docker network disconnect`), publish, reconnect | fail-static while cut; catch-up p99 <= 6s after reconnect | I3, M3 |
-| S4 | **Proxy killed**, then restarted | stale <= 41s, lost <= 131s; restart re-verifies from disk and enforces the same version | M2, G2, I1 |
+| S1 | **Happy rollout**: publish v2, canary, then all | every proxy acks v2; drift 0; propagation measured | G1, G5, M1 |
+| S2 | **Control plane killed** mid-traffic (mixed read/write calls), then restarted | 0 calls wrongly allowed; proxies keep their applied version; all re-sync after restart | I3, G3, M5 |
+| S3 | **Proxy restart while the control plane is down** | restarted proxy re-verifies from disk and enforces the last good policy (same version); never deny-all from a good file, never wider | I1, I3, G3 |
+| S4 | **Network cut** of one proxy (`docker network disconnect`): it goes stale then lost; publish v3; reconnect | fail-static while cut; stale <= 41s, lost <= 131s; catches up to v3, p99 <= 6s after reconnect | I3, M2, M3 |
 | S5 | **Bad policies published**: unsigned, 1-sig, old version, wrong tenant, expired, corrupted | 0 applied; each reason visible on the fleet page and in metrics | I1, I2, M6 |
 | S6 | **Tampered disk**: edited policy file, edited apply log, older valid policy put back | Tampered state (deny-all) and a tamper report; never a wider policy | I3, I6, THREATS #5 |
-| S7 | **Freeze**: updates blocked until expiry; clock set back | safe mode (`read_only` default) at `effective_now`; shown on fleet page and metrics | I3, G4, THREATS #4, #12 |
-| S8 | **Canary failure**: a canary proxy rejects or is lost during a rollout | rollout Halted; non-canary proxies untouched; rollback by re-publish works | G5, J6 |
-| S9 | **Reconnect storm** (optional): CP restart with 1,000 simulated proxies | CP stays within the poll cap (503 + Retry-After, no crash); all catch up | M7, THREATS #8 |
+| S7 | **Freeze / expiry**: updates blocked until expiry; clock set back | safe mode (`read_only` default) at `effective_now`; shown on fleet page and metrics | I3, G4, THREATS #4, #12 |
+| S8 | **Canary failure auto-halt**: a canary proxy rejects or is lost during a rollout | rollout Halted; non-canary proxies untouched; rollback by re-publish works | G5, J6 |
+| S9 | **Corporate forward proxy** (optional): proxies reach the CP only via `HTTPS_PROXY` | long-poll and status work through the forward proxy; no direct route used | J2 |
 | S10 | **Leak check**: canary secrets in prompts, arguments and results; capture proxy-to-CP traffic, CP logs, metrics and storage | 0 canary hits | I4, G7, M8 |
 | S11 | **Pod reschedule** on k3d (stretch) | rescheduled proxy re-verifies and enforces the same version | I1, I2 |
+| S12 | **Rogue control plane** serves forged, 1-signature, wrong-tenant and older-version envelopes | 0 applied; applied version unchanged; reject reason reported | I1, I2, THREATS #1-#3 |
+| S13 | **Reconnect storm** (optional): CP restart with 1,000 simulated proxies | CP stays within the poll cap (503 + Retry-After, no crash); all catch up | M7, THREATS #8 |

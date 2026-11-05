@@ -14,6 +14,7 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"sort"
 	"strconv"
 
@@ -54,11 +55,20 @@ func Sign(env *wire.Envelope, priv ed25519.PrivateKey) {
 }
 
 // DecodeEnvelope parses one JSON-encoded envelope: at most
-// wire.MaxEnvelopeBytes, no unknown fields, no trailing data. Errors are the
-// bare wire sentinels (wire.ErrBodyTooLarge, wire.ErrBodyInvalid). It does not
-// check the shape or any signature.
+// wire.MaxEnvelopeBytes, no unknown fields, no trailing data. Like
+// policy.Parse (M-D32) it also rejects a duplicate key and a key that is not
+// spelled exactly (encoding/json would accept "Payload" for "payload" and keep
+// the last of two equal keys), at the top level and inside each signature.
+// Errors are the bare wire sentinels (wire.ErrBodyTooLarge, wire.ErrBodyInvalid).
+// It does not check the shape or any signature.
 func DecodeEnvelope(data []byte) (wire.Envelope, error) {
 	var env wire.Envelope
+	if len(data) > wire.MaxEnvelopeBytes {
+		return wire.Envelope{}, wire.ErrBodyTooLarge
+	}
+	if !strictKeys(data) {
+		return wire.Envelope{}, wire.ErrBodyInvalid
+	}
 	if err := wire.Decode(bytes.NewReader(data), wire.MaxEnvelopeBytes, &env); err != nil {
 		return wire.Envelope{}, err
 	}
@@ -89,4 +99,115 @@ func validSigners(env wire.Envelope, keys map[wire.Hash]ed25519.PublicKey) []wir
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
 	return out
+}
+
+var (
+	envelopeKeys  = map[string]bool{"payloadType": true, "payload": true, "signatures": true}
+	signatureKeys = map[string]bool{"keyid": true, "sig": true}
+)
+
+// strictKeys reports whether every object key in an envelope document is one
+// of the exact, known names and appears once in its object. Documents that are
+// not well formed are left to the normal decoder to reject, so it returns true
+// for them only if no key rule is broken before the syntax error.
+func strictKeys(data []byte) bool {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	t, err := dec.Token()
+	if err != nil || t != json.Delim('{') {
+		return true // not an object: the decoder rejects it
+	}
+	seen := map[string]bool{}
+	for dec.More() {
+		t, err := dec.Token()
+		if err != nil {
+			return true
+		}
+		key, ok := t.(string)
+		if !ok || !envelopeKeys[key] || seen[key] {
+			return false
+		}
+		seen[key] = true
+		if key != "signatures" {
+			if !skipValue(dec) {
+				return true
+			}
+			continue
+		}
+		t, err = dec.Token()
+		if err != nil {
+			return true
+		}
+		if t != json.Delim('[') {
+			continue // null or a wrong type: the decoder decides
+		}
+		for dec.More() {
+			t, err := dec.Token()
+			if err != nil {
+				return true
+			}
+			if t != json.Delim('{') {
+				if d, isDelim := t.(json.Delim); isDelim && !skipRest(dec, d) {
+					return true
+				}
+				continue
+			}
+			sigSeen := map[string]bool{}
+			for dec.More() {
+				t, err := dec.Token()
+				if err != nil {
+					return true
+				}
+				k, ok := t.(string)
+				if !ok || !signatureKeys[k] || sigSeen[k] {
+					return false
+				}
+				sigSeen[k] = true
+				if !skipValue(dec) {
+					return true
+				}
+			}
+			if _, err := dec.Token(); err != nil { // closing }
+				return true
+			}
+		}
+		if _, err := dec.Token(); err != nil { // closing ]
+			return true
+		}
+	}
+	return true
+}
+
+// skipValue consumes one JSON value. It reports false on a syntax error.
+func skipValue(dec *json.Decoder) bool {
+	t, err := dec.Token()
+	if err != nil {
+		return false
+	}
+	if d, ok := t.(json.Delim); ok {
+		return skipRest(dec, d)
+	}
+	return true
+}
+
+// skipRest consumes the rest of a container whose opening delimiter d was
+// just read.
+func skipRest(dec *json.Decoder, d json.Delim) bool {
+	if d != '{' && d != '[' {
+		return false
+	}
+	depth := 1
+	for depth > 0 {
+		t, err := dec.Token()
+		if err != nil {
+			return false
+		}
+		if d, ok := t.(json.Delim); ok {
+			if d == '{' || d == '[' {
+				depth++
+			} else {
+				depth--
+			}
+		}
+	}
+	return true
 }
