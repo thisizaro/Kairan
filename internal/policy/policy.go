@@ -60,6 +60,7 @@ type Policy struct {
 type role struct {
 	exact    map[string]Class
 	prefixes []prefixRule
+	trie     trie // lookup index over prefixes (decide.go)
 }
 
 type prefixRule struct {
@@ -230,6 +231,7 @@ func parseRole(dec *json.Decoder) (*role, error) {
 		}
 		return a < b
 	})
+	r.trie = buildTrie(r.prefixes)
 	return r, nil
 }
 
