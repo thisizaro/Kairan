@@ -225,7 +225,7 @@ func TestSignatureMalleability(t *testing.T) {
 	sa, sb := ed25519.Sign(k.a, good), ed25519.Sign(k.b, good)
 	ma, mb := malleate(sa), malleate(sb)
 	if ed25519.Verify(pub(k.a), good, ma) {
-		t.Skip("stdlib accepts non-canonical S; test premise void")
+		t.Fatal("FINDING: stdlib ed25519.Verify accepts a non-canonical S (malleated signature); the premise of this test and possibly of trust is void")
 	}
 	if bytes.Equal(ma, sa) {
 		t.Fatal("test bug: malleated equals original")

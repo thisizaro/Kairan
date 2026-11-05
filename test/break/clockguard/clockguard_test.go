@@ -602,7 +602,7 @@ func TestSpecialFilesInPlaceOfTheHighWaterFile(t *testing.T) {
 			os.MkdirAll(dir, 0o700)
 			path := filepath.Join(dir, agent.HighWaterFile)
 			if err := f(path); err != nil {
-				t.Skipf("setup: %v", err)
+				t.Fatalf("environment: setup: %v", err)
 			}
 			type res struct {
 				g   *agent.ClockGuard

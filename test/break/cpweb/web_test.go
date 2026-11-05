@@ -919,21 +919,41 @@ func TestRowsFollowFleetViewOrder(t *testing.T) {
 
 // ---- volume and concurrency ----
 
+// Load-independent scaling check: rendering 5000 rows must cost roughly 10x rendering 500 rows (linear).
+// Quadratic behaviour would be about 100x. Each size is measured as the best of 3 runs, in the same
+// process and under the same machine load, so a busy CI box slows both sides alike.
 func TestLargeFleetRendersInReasonableTime(t *testing.T) {
-	f := newFake()
-	var ps []fleet.Last
-	for i := 0; i < 5000; i++ {
-		ps = append(ps, lastOf("bank-a", wire.ID(fmt.Sprintf("p%05d", i)), "main", wire.StateEnforcing, 7, now0.Add(-time.Duration(i%200)*time.Second)))
+	render := func(n int) (time.Duration, resp) {
+		f := newFake()
+		var ps []fleet.Last
+		for i := 0; i < n; i++ {
+			ps = append(ps, lastOf("bank-a", wire.ID(fmt.Sprintf("p%05d", i)), "main", wire.StateEnforcing, 7, now0.Add(-time.Duration(i%200)*time.Second)))
+		}
+		f.fleet["bank-a"] = ps
+		h, _ := newHandler(f)
+		best := time.Duration(1 << 62)
+		var last resp
+		for k := 0; k < 3; k++ {
+			start := time.Now()
+			last = get(t, h, "/?tenant=bank-a&lang=ja")
+			if last.code != 200 {
+				t.Fatalf("status %d with %d rows", last.code, n)
+			}
+			if d := time.Since(start); d < best {
+				best = d
+			}
+		}
+		return best, last
 	}
-	f.fleet["bank-a"] = ps
-	h, _ := newHandler(f)
-	start := time.Now()
-	r := get(t, h, "/?tenant=bank-a&lang=ja")
-	if r.code != 200 {
-		t.Fatalf("status %d", r.code)
+	small, _ := render(500)
+	big, r := render(5000)
+	floor := small
+	if floor < 5*time.Millisecond {
+		floor = 5 * time.Millisecond
 	}
-	if d := time.Since(start); d > 5*time.Second {
-		t.Fatalf("5000 rows took %v", d)
+	t.Logf("500 rows: %v, 5000 rows: %v", small, big)
+	if big > 40*floor {
+		t.Fatalf("5000 rows took %v vs %v for 500 rows (%.0fx for 10x the rows): not linear", big, small, float64(big)/float64(floor))
 	}
 	if !strings.Contains(r.body, "p04999") {
 		t.Fatal("rows dropped silently")

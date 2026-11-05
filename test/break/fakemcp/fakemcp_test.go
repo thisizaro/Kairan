@@ -112,7 +112,7 @@ func (s *server) path(t *testing.T) string {
 			return p
 		}
 	}
-	t.Skip("doc ambiguity: the MCP endpoint path of fakemcp is not documented; no candidate path answered")
+	t.Fatal("no candidate MCP endpoint path answered tools/list (the test found one before; fakemcp regressed)")
 	return ""
 }
 

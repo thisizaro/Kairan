@@ -677,7 +677,7 @@ func TestKeyFileMustBeRegular(t *testing.T) {
 	runIn(t, bin, d, nil, "", "sign", "-key", a.keyFile, "-in", "good.json", "-out", "e.json")
 	fifo := filepath.Join(d, "fifo.key")
 	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
-		t.Skip("mkfifo unavailable")
+		t.Fatalf("environment: mkfifo: %v", err)
 	}
 	for _, kf := range []string{d, fifo, "/dev/null", "/dev/zero"} {
 		kf := kf

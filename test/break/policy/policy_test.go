@@ -124,15 +124,11 @@ func TestFixturePayloadsParse(t *testing.T) {
 	}
 	// tampered-payload carries one trailing space: M-D44 (2) allows RFC 8259
 	// whitespace after the JSON value, so it must parse.
-	skip := map[string]bool{}
 	n := 0
 	for _, c := range doc.Cases {
 		c := c
 		n++
 		t.Run(c.Name, func(t *testing.T) {
-			if skip[c.Name] {
-				t.Skip("trailing whitespace behaviour not pinned by docs")
-			}
 			eb, err := os.ReadFile(filepath.Join(root, c.File))
 			if err != nil {
 				t.Fatal(err)

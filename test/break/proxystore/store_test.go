@@ -395,7 +395,7 @@ func TestNonRegularFileInPlaceOfThePolicy(t *testing.T) {
 		},
 		"fifo": func(t *testing.T, s *store.Store, dir string) {
 			if err := syscall.Mkfifo(s.Path(), 0o600); err != nil {
-				t.Skipf("mkfifo: %v", err)
+				t.Fatalf("environment: mkfifo: %v", err)
 			}
 		},
 		"unreadable-file": func(t *testing.T, s *store.Store, dir string) {
@@ -435,7 +435,7 @@ func TestLargeSparseFileIsRejectedWithoutReadingItAll(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := f.Truncate(2 << 30); err != nil { // 2 GiB of zeros, no disk used
-		t.Skipf("sparse files unsupported: %v", err)
+		t.Fatalf("environment: sparse files unsupported: %v", err)
 	}
 	f.Close()
 	start := time.Now()
@@ -604,9 +604,20 @@ loop:
 			}
 		}
 	}
-	if len(seen) == 0 {
-		t.Skip("could not observe the temp file name during Save; cannot plant a realistic leftover")
+	// The temp-file name is not documented (change-request filed). Real names seen during Save must be
+	// removed by Open (doc). Guessed names are planted too: they must never be loaded and must not make
+	// Open fail, but their removal is not asserted because the pattern is not part of the contract.
+	realSeen := map[string]bool{}
+	for n := range seen {
+		realSeen[n] = true
 	}
+	for _, n := range []string{
+		base + ".tmp", base + ".tmp.1234", base + ".tmp-1234", base + ".1234.tmp", base + "-tmp",
+		"." + base + ".tmp", "." + base + ".tmp1234", ".tmp-" + base, "tmp-" + base, base + ".tmp1234567890",
+	} {
+		seen[n] = true
+	}
+	t.Logf("real temp names observed: %d; guessed leftovers planted: %d", len(realSeen), len(seen)-len(realSeen))
 	// Reset to the old policy.
 	if err := s.Save(old); err != nil {
 		t.Fatal(err)
@@ -632,18 +643,32 @@ loop:
 		t.Fatalf("Open with leftovers: %v", err)
 	}
 	for _, n := range planted {
+		base0 := strings.SplitN(n, "-crash", 2)[0]
+		if !realSeen[base0] {
+			continue
+		}
 		if _, err := os.Lstat(filepath.Join(dir, n)); err == nil {
-			t.Errorf("leftover %q survived Open (doc: removes temp files left by a crash)", n)
+			t.Errorf("leftover %q (a real temp name) survived Open (doc: removes temp files left by a crash)", n)
 		}
 	}
 	out, found, err := s2.Load()
 	if err != nil || !found || !reflect.DeepEqual(out, old) {
 		t.Fatalf("after leftovers the stored policy is %v/%v (a never-applied newer policy must not be picked up)", found, err)
 	}
-	if got := entries(t, dir); len(got) != 1 || got[0] != base {
-		t.Fatalf("data dir after Open: %v", got)
+	for _, got := range entries(t, dir) {
+		if got == base {
+			continue
+		}
+		if !strings.HasPrefix(got, "policy.json") && !strings.Contains(got, "tmp") {
+			t.Fatalf("Open left an unexpected file: %q", got)
+		}
+	}
+	if _, err := os.Lstat(filepath.Join(dir, base)); err != nil {
+		t.Fatalf("Open removed the real policy file: %v", err)
 	}
 }
+
+func unusedMarker() {}
 
 func TestOpenKeepsUnrelatedFilesAndTheRealPolicy(t *testing.T) {
 	s, dir := openIn(t)

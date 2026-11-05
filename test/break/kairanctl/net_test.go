@@ -442,8 +442,8 @@ func TestPublishDuplicateSignatureNotWavedThrough(t *testing.T) {
 	bs, _ := json.Marshal(e)
 	writeFile(t, filepath.Join(d, "dup.json"), bs, 0o644)
 	r := runIn(t, bin, d, connEnv(tok), "", "publish", "-in", "dup.json", "-url", cp.srv.URL, "-allow-plaintext")
-	if r.code == 0 && cp.n.Load() > 0 {
-		t.Skip("doc ambiguity Q-D4: publish sends a two-identical-signature envelope; docs say only 'fewer than 2 signatures' (T-D4), PRD G1 wants 2 different people")
+	if r.code == 0 || cp.n.Load() > 0 {
+		t.Fatalf("Q-D4: publish sent an envelope holding the same signature twice (exit %d, %d requests); it must be refused client-side", r.code, cp.n.Load())
 	}
 }
 
@@ -776,9 +776,6 @@ func TestTLSVerificationIsNeverSkipped(t *testing.T) {
 // --- 30 second client timeout (M-D31) ---
 
 func TestClientTimeout30s(t *testing.T) {
-	if testing.Short() {
-		t.Skip("takes ~30s")
-	}
 	bin := buildCtl(t)
 	for name, h := range map[string]func(w http.ResponseWriter, r *http.Request, b []byte){
 		"hang-before-headers": func(w http.ResponseWriter, r *http.Request, b []byte) {

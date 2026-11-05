@@ -109,7 +109,7 @@ func TestDiskFullLeavesLogAsBefore(t *testing.T) {
 
 func TestReadOnlyFileRefusesToOpenForAppend(t *testing.T) {
 	if os.Geteuid() == 0 {
-		t.Skip("root ignores file modes")
+		t.Fatal("environment: running as root, file modes are ignored; run the break suite as a normal user")
 	}
 	b, _ := build(t, 2)
 	p := filepath.Join(t.TempDir(), "apply.log")

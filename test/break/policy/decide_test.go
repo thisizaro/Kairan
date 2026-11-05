@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"kairan/internal/policy"
 )
@@ -398,12 +399,12 @@ func TestEmptyPoliciesDenyAll(t *testing.T) {
 	}
 }
 
-// Limits: the biggest legal policy decides correctly and quickly (no quadratic blow-up).
-func TestMaxSizePolicyDecides(t *testing.T) {
+// maxRolesJSON builds a roles object with nRoles roles of nPats patterns each.
+func maxRolesJSON(nRoles, nPats int) string {
 	var roles []string
-	for r := 0; r < policy.MaxRoles; r++ {
+	for r := 0; r < nRoles; r++ {
 		var ents []string
-		for i := 0; i < policy.MaxPatterns; i++ {
+		for i := 0; i < nPats; i++ {
 			c := "RWX"[i%3]
 			if i%2 == 0 {
 				ents = append(ents, fmt.Sprintf(`"t%d.*":%q`, i, string(c)))
@@ -413,13 +414,57 @@ func TestMaxSizePolicyDecides(t *testing.T) {
 		}
 		roles = append(roles, fmt.Sprintf(`"role-%d":{%s}`, r, strings.Join(ents, ",")))
 	}
-	payload := pl{roles: "{" + strings.Join(roles, ",") + "}"}.String()
-	if len(payload) > 256<<10 {
-		t.Skip("max-size policy exceeds the 256 KiB payload cap (T-D1); limits are exercised by TestLimits")
+	return "{" + strings.Join(roles, ",") + "}"
+}
+
+const payloadCap = 256 << 10 // T-D1
+
+// Limits: the biggest legal policies that fit under the 256 KiB payload cap decide correctly and
+// quickly (no quadratic blow-up). Two shapes: every role slot used (MaxRoles roles, as many patterns
+// per role as fit) and every pattern slot used (MaxPatterns per role, as many roles as fit).
+func TestMaxSizePolicyDecides(t *testing.T) {
+	fits := func(roles string) bool { return len(pl{roles: roles}.String()) <= payloadCap }
+
+	// Wide: MaxRoles roles.
+	nPats := sort.Search(policy.MaxPatterns, func(n int) bool { return !fits(maxRolesJSON(policy.MaxRoles, n+1)) })
+	wide := maxRolesJSON(policy.MaxRoles, nPats)
+	if !fits(wide) {
+		t.Fatalf("cannot build a %d-role policy under the cap", policy.MaxRoles)
 	}
-	p := parseRoles(t, "{"+strings.Join(roles, ",")+"}")
-	if d := p.Decide("role-255", "t1022.zzz", false); !d.Allowed || d.Rule != "t1022.*" {
+	t.Logf("wide: %d roles x %d patterns, %d bytes", policy.MaxRoles, nPats, len(pl{roles: wide}.String()))
+	p := parseRoles(t, wide)
+	lastEven := nPats - 1
+	if lastEven%2 != 0 {
+		lastEven--
+	}
+	start := time.Now()
+	for r := 0; r < policy.MaxRoles; r += 51 {
+		role := fmt.Sprintf("role-%d", r)
+		d := p.Decide(role, fmt.Sprintf("t%d.zzz", lastEven), false)
+		if !d.Allowed || d.Rule != fmt.Sprintf("t%d.*", lastEven) {
+			t.Fatalf("%s: %+v", role, d)
+		}
+	}
+	if d := p.Decide(fmt.Sprintf("role-%d", policy.MaxRoles-1), "nomatch.zzz", false); d.Allowed {
+		t.Fatalf("a tool no pattern names was allowed: %+v", d)
+	}
+
+	// Deep: MaxPatterns patterns per role.
+	nRoles := sort.Search(policy.MaxRoles, func(n int) bool { return !fits(maxRolesJSON(n+1, policy.MaxPatterns)) })
+	deep := maxRolesJSON(nRoles, policy.MaxPatterns)
+	if !fits(deep) {
+		t.Fatalf("cannot build a %d-pattern role under the cap", policy.MaxPatterns)
+	}
+	t.Logf("deep: %d roles x %d patterns, %d bytes", nRoles, policy.MaxPatterns, len(pl{roles: deep}.String()))
+	p = parseRoles(t, deep)
+	if d := p.Decide(fmt.Sprintf("role-%d", nRoles-1), "t1022.zzz", false); !d.Allowed || d.Rule != "t1022.*" {
 		t.Fatalf("%+v", d)
+	}
+	if d := p.Decide("role-0", "t1023.nope", false); d.Allowed {
+		t.Fatalf("t1023.nope must not match t1023.exact: %+v", d)
+	}
+	if el := time.Since(start); el > 20*time.Second {
+		t.Fatalf("max-size decisions took %v", el)
 	}
 }
 

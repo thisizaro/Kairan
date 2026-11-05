@@ -700,9 +700,6 @@ func TestImportsOnlyStdlibAndWire(t *testing.T) {
 // M7/S9 shape: 1000 simulated proxies against a control plane that first answers 503 + Retry-After
 // (a storm), then serves a policy. All must catch up, with no errors counted for the 503s.
 func TestThousandProxiesCatchUpAfterStorm(t *testing.T) {
-	if testing.Short() {
-		t.Skip("scale test")
-	}
 	f, srv := newFakeCP(t, "sim", 300*time.Millisecond)
 	f.unavailable = 300
 	f.publish(1)

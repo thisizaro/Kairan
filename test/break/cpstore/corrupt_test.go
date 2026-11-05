@@ -444,7 +444,7 @@ func TestNonRegularStateFileDoesNotHang(t *testing.T) {
 	_, dir := populated(t)
 	fifo := filepath.Join(dir, "envelopes", "bank-a", "00000000000000000009.json")
 	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
-		t.Skipf("mkfifo: %v", err)
+		t.Fatalf("environment: mkfifo: %v", err)
 	}
 	done := make(chan error, 1)
 	go func() { _, err := store.OpenFiles(dir); done <- err }()
