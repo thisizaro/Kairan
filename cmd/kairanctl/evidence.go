@@ -94,7 +94,7 @@ type logInput struct {
 // finding is one thing the evidence check wants the reader to see.
 type finding struct {
 	proxy  wire.ID
-	kind   string // version, seq, head, regression, log, dropped
+	kind   string // version, seq, head, regression, anchor, log
 	en, ja string
 }
 
@@ -180,6 +180,14 @@ func checkTimelineAlone(id wire.ID, periods []wire.TimelineEntry) []finding {
 		} else {
 			maxVersion = e.Version
 		}
+		if (e.LogSeq > 0) != (e.LogHead != "") {
+			// A real proxy reports both or neither (M-D63). One alone is not
+			// an anchor, and may hide a truncated or rewritten log.
+			out = append(out, finding{id, "anchor",
+				fmt.Sprintf("proxy %s: the control plane timeline has an incomplete apply-log anchor at %s (%s); a proxy reports the seq and the head together, so this may hide a cut or rewritten log", id, at, halfAnchor(e, false)),
+				fmt.Sprintf("プロキシ %s: %s のタイムラインの適用ログのアンカーが不完全です (%s)。プロキシは seq とヘッドを必ず一緒に報告するため、ログの切り詰めや書き換えが隠れている可能性があります", id, at, halfAnchor(e, true))})
+			continue
+		}
 		switch {
 		case e.LogSeq < maxSeq:
 			out = append(out, finding{id, "regression",
@@ -194,6 +202,19 @@ func checkTimelineAlone(id wire.ID, periods []wire.TimelineEntry) []finding {
 		}
 	}
 	return out
+}
+
+func halfAnchor(e wire.TimelineEntry, ja bool) string {
+	if e.LogSeq > 0 {
+		if ja {
+			return fmt.Sprintf("seq %d のみでヘッドなし", e.LogSeq)
+		}
+		return fmt.Sprintf("seq %d without a head", e.LogSeq)
+	}
+	if ja {
+		return fmt.Sprintf("ヘッド %s のみで seq なし", shortHash(e.LogHead))
+	}
+	return fmt.Sprintf("head %s without a seq", shortHash(e.LogHead))
 }
 
 // checkAgainstLog compares one proxy's verified log with its timeline.
@@ -213,7 +234,7 @@ func checkAgainstLog(id wire.ID, periods []wire.TimelineEntry, log []applylog.En
 	}
 	for _, e := range periods {
 		at := fmtTime(e.FirstSeenUnixMs)
-		if e.LogSeq > 0 {
+		if e.LogSeq > 0 && e.LogHead != "" { // a half-set anchor is flagged by checkTimelineAlone
 			switch {
 			case e.LogSeq > n:
 				out = append(out, finding{id, "seq",
