@@ -187,7 +187,7 @@ func ctlEnv(t *testing.T, env map[string]string, args ...string) (int, string, s
 // admin runs a networked command against f with the right token.
 func (f *fakeCP) admin(t *testing.T, args ...string) (int, string, string) {
 	t.Helper()
-	return ctlEnv(t, map[string]string{"KAIRAN_ADMIN_TOKEN": testToken}, withConn(f.srv.URL, args)...)
+	return ctlEnv(t, map[string]string{"KCTL_ADMIN_TOKEN": testToken}, withConn(f.srv.URL, args)...)
 }
 
 // withConn inserts -url and -allow-plaintext after the command words.
@@ -265,11 +265,11 @@ func TestTokenSources(t *testing.T) {
 		t.Fatalf("token file: exit %d %s", code, e)
 	}
 	// Token file from the environment.
-	if code, _, e := ctlEnv(t, map[string]string{"KAIRAN_ADMIN_TOKEN_FILE": tf}, args...); code != 0 {
+	if code, _, e := ctlEnv(t, map[string]string{"KCTL_ADMIN_TOKEN_FILE": tf}, args...); code != 0 {
 		t.Fatalf("token file env: exit %d %s", code, e)
 	}
 	// URL from the environment.
-	if code, _, e := ctlEnv(t, map[string]string{"KAIRAN_ADMIN_TOKEN": testToken, "KAIRAN_CP_URL": cp.srv.URL},
+	if code, _, e := ctlEnv(t, map[string]string{"KCTL_ADMIN_TOKEN": testToken, "KCTL_CP_URL": cp.srv.URL},
 		"publish", "-allow-plaintext", "-in", envPath); code != 0 {
 		t.Fatalf("url env: exit %d %s", code, e)
 	}
@@ -296,7 +296,7 @@ func TestTokenSources(t *testing.T) {
 		"empty token file":   {nil, append(args, "-token-file", empty)},
 		"control characters": {nil, append(args, "-token-file", ctrl)},
 		"missing file":       {nil, append(args, "-token-file", filepath.Join(dir, "nope"))},
-		"env with newline":   {map[string]string{"KAIRAN_ADMIN_TOKEN": "a\nb"}, args},
+		"env with newline":   {map[string]string{"KCTL_ADMIN_TOKEN": "a\nb"}, args},
 	} {
 		code, out, errb := ctlEnv(t, tc.env, tc.args...)
 		if code != 1 || !hasBoth(errb) {
@@ -496,7 +496,7 @@ func TestTimeout(t *testing.T) {
 func TestConnectionRules(t *testing.T) {
 	dir := t.TempDir()
 	envPath, _ := twoSigned(t, dir)
-	env := map[string]string{"KAIRAN_ADMIN_TOKEN": testToken}
+	env := map[string]string{"KCTL_ADMIN_TOKEN": testToken}
 
 	plain := newFakeCP(t, false)
 	// Plaintext only with the explicit flag.
@@ -950,7 +950,7 @@ func TestNetworkCommandsInUsage(t *testing.T) {
 	if code != 0 {
 		t.Fatal(code)
 	}
-	for _, w := range []string{"publish", "rollout start", "rollout status", "rollout rollback", "fleet", "evidence export", "KAIRAN_ADMIN_TOKEN"} {
+	for _, w := range []string{"publish", "rollout start", "rollout status", "rollout rollback", "fleet", "evidence export", "KCTL_ADMIN_TOKEN"} {
 		if !strings.Contains(out, w) {
 			t.Errorf("help lacks %q", w)
 		}

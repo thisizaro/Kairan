@@ -39,9 +39,9 @@ type connFlags struct {
 
 func addConnFlags(fs *flag.FlagSet) *connFlags {
 	return &connFlags{
-		url:       fs.String("url", "", "control plane address, for example https://cp.example (or env KAIRAN_CP_URL)"),
+		url:       fs.String("url", "", "control plane address, for example https://cp.example (or env KCTL_CP_URL)"),
 		caFile:    fs.String("ca-file", "", "extra CA certificates (PEM) to trust, besides the system roots"),
-		tokenFile: fs.String("token-file", "", "file holding the admin token (or env KAIRAN_ADMIN_TOKEN, or KAIRAN_ADMIN_TOKEN_FILE)"),
+		tokenFile: fs.String("token-file", "", "file holding the admin token (or env KCTL_ADMIN_TOKEN, or KCTL_ADMIN_TOKEN_FILE)"),
 		plaintext: fs.Bool("allow-plaintext", false, "allow http:// (demo only: the admin token is then sent unencrypted)"),
 	}
 }
@@ -58,10 +58,10 @@ type cpClient struct {
 func (c *connFlags) open(s streams) (*cpClient, error) {
 	raw := *c.url
 	if raw == "" {
-		raw = s.env("KAIRAN_CP_URL")
+		raw = s.env("KCTL_CP_URL")
 	}
 	if raw == "" {
-		return nil, usageErr("-url (or KAIRAN_CP_URL) is required", "-url (または環境変数 KAIRAN_CP_URL) が必要です")
+		return nil, usageErr("-url (or KCTL_CP_URL) is required", "-url (または環境変数 KCTL_CP_URL) が必要です")
 	}
 	base, cerr := parseBaseURL(raw, *c.plaintext)
 	if cerr != nil {
@@ -126,7 +126,7 @@ func parseBaseURL(raw string, plaintext bool) (*url.URL, *cliError) {
 // is never echoed in any message.
 func adminToken(s streams, file string) (string, *cliError) {
 	if file == "" {
-		file = s.env("KAIRAN_ADMIN_TOKEN_FILE")
+		file = s.env("KCTL_ADMIN_TOKEN_FILE")
 	}
 	var tok string
 	switch {
@@ -149,11 +149,11 @@ func adminToken(s streams, file string) (string, *cliError) {
 		}
 		tok = strings.TrimSpace(string(b))
 	default:
-		tok = strings.TrimSpace(s.env("KAIRAN_ADMIN_TOKEN"))
+		tok = strings.TrimSpace(s.env("KCTL_ADMIN_TOKEN"))
 	}
 	if tok == "" {
-		return "", fail("no admin token: set KAIRAN_ADMIN_TOKEN, or use -token-file (the token is never a flag)",
-			"管理トークンがありません。環境変数 KAIRAN_ADMIN_TOKEN を設定するか -token-file を使ってください (トークンはフラグでは渡せません)")
+		return "", fail("no admin token: set KCTL_ADMIN_TOKEN, or use -token-file (the token is never a flag)",
+			"管理トークンがありません。環境変数 KCTL_ADMIN_TOKEN を設定するか -token-file を使ってください (トークンはフラグでは渡せません)")
 	}
 	if len(tok) > maxTokenBytes {
 		return "", fail("the admin token is too long", "管理トークンが長すぎます")
