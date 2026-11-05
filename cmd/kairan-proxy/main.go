@@ -5,6 +5,7 @@
 // Usage:
 //
 //	kairan-proxy -config proxy.json
+//	kairan-proxy -config proxy.json -import bundle.json
 //
 // This file is only wiring (ARCHITECTURE section 10, cmd/kairan-proxy). The
 // logic is in internal/proxy/agent (boot, poll, status), internal/proxy/enforce
@@ -33,6 +34,8 @@
 //	safe_mode        read_only (default) or deny_all: what an expired policy allows
 //	ca_file          PEM certificates to trust for cp_url, added to the system roots
 //	allow_plaintext  true allows an http:// cp_url (Docker demo only)
+//	metrics_listen   host:port of the local read-only listener (self view and
+//	                 metrics); not set means no such listener. Must differ from listen.
 //
 // The trust root comes only from this file. A config that fails any check
 // (threshold under 2, skew over 5m, safe_mode outside the enum, a bad key, a
@@ -57,10 +60,71 @@
 // If a trusted key is one of the repository's TEST-ONLY fixture keys, the
 // proxy logs a loud warning at start and counts it (test_only_trusted_key).
 //
+// # Local self view and metrics (P-09)
+//
+// With metrics_listen set, a second listener serves two read-only routes, GET
+// and HEAD only (anything else is 405, other paths 404), with no
+// authentication: it is inbound inside the customer network only (PRD J2,
+// M-D51), so bind it to an address on that network. A port already in use
+// stops the proxy at start.
+//
+//	GET /v1/self   JSON with exactly: tenant, proxy_id, state, applied_version,
+//	               policy_hash, log_seq, log_head, clock_untrusted. State is the
+//	               wire state (booting, deny_all, tampered, enforcing,
+//	               safe_mode). policy_hash is "" when no policy is in force. The
+//	               evidence export compares this with the control plane's view
+//	               and the apply log (M-D7, THREATS #2).
+//	GET /metrics   Prometheus text format 0.0.4: gauges kairan_proxy_state{state}
+//	               (one series per state, 1 for the current one; the label is
+//	               the state with "_" written "-": deny-all, safe-mode, as
+//	               metric labels are wire IDs, M-D29),
+//	               kairan_proxy_applied_version, kairan_proxy_log_seq,
+//	               kairan_proxy_clock_untrusted, kairan_proxy_test_only_trusted_keys;
+//	               counters kairan_proxy_calls_allowed_total, _calls_denied_total,
+//	               _requests_rejected_total, _auth_failures_total,
+//	               _upstream_errors_total, _policies_applied_total,
+//	               _policies_rejected_total, _poll_errors_total,
+//	               _status_errors_total, _policy_expired_total,
+//	               _boot_tampered_total, _clock_untrusted_total,
+//	               _decision_log_denied_total, _decision_log_write_errors_total
+//	               and _decision_log_rotate_errors_total.
+//
+// Both are built only from the agent's snapshot and counters: no payload,
+// argument, result, role, API key or user data (invariant I4). The policy hash
+// is in the self view and never a metric label.
+//
+// # Offline import (P-11, PRD J3)
+//
+// With -import, kairan-proxy does not serve and does not use the network. It
+// reads one JSON-encoded signed envelope (what kairanctl sign and approve
+// write) and applies it to data_dir by the same path as a policy from the
+// control plane: the strict decoder, trust.Accept (a threshold of distinct
+// trusted signatures, tenant, a version above everything applied before, not
+// expired at effective_now), store.Save, then an apply-log entry. The trust
+// root is the one in proxy.json. A rejected bundle (unsigned, one signature,
+// old version, wrong tenant, expired, corrupted, not an envelope) applies
+// nothing, leaves the policy in force and the stored file unchanged, and is
+// written to the apply log with its reason. A bundle file that is not a
+// regular file (a FIFO, a device, a directory) or is larger than an envelope
+// may be is refused before it is read. An apply log that fails verification
+// means nothing is imported. The result is printed in English and Japanese on
+// standard error; nothing from the bundle is printed. A proxy that starts
+// afterwards enforces the imported policy from disk; an import does not
+// change a proxy that is already running.
+//
+// # The data directory is locked
+//
+// A process takes an exclusive lock on data_dir/kairan.lock for its whole
+// run (the proxy) or until it is done (an import), waiting up to 5 seconds. A
+// second process (an import beside a running proxy, or two proxies) stops
+// with "the data directory is in use", so two writers can never break the
+// apply-log chain. The lock goes away with the process.
+//
 // # Exit status
 //
-// 0 after a clean shutdown, 2 for a bad command line or config, 1 for a
-// runtime failure at startup.
+// 0 after a clean shutdown or a successful import, 2 for a bad command line
+// or config, 1 for a runtime failure at startup or a rejected or unreadable
+// bundle.
 package main
 
 import (
@@ -80,10 +144,8 @@ import (
 
 	"kairan/internal/clock"
 	"kairan/internal/proxy/agent"
-	"kairan/internal/proxy/applylog"
 	"kairan/internal/proxy/declog"
 	"kairan/internal/proxy/enforce"
-	"kairan/internal/proxy/store"
 )
 
 // Metric name for a TEST-ONLY trusted key (M-D37).
@@ -115,19 +177,32 @@ func main() {
 // ready, if not nil, is called with the MCP listener's address once the proxy
 // has booted and is accepting connections.
 func run(ctx context.Context, args []string, stderr io.Writer, ready func(addr string)) error {
+	return runLocal(ctx, args, stderr, ready, nil)
+}
+
+// runLocal is run with a second callback: localReady gets the local listener's
+// address (metrics_listen) once it is bound, before ready is called. It is not
+// called if metrics_listen is not set.
+func runLocal(ctx context.Context, args []string, stderr io.Writer, ready, localReady func(addr string)) error {
 	fs := flag.NewFlagSet("kairan-proxy", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	cfgPath := fs.String("config", "", "path to proxy.json")
+	importPath := fs.String("import", "", "apply this offline signed bundle to the data directory and exit")
 	if err := fs.Parse(args); err != nil {
 		return fmt.Errorf("%w: %v", errUsage, err)
 	}
-	if fs.NArg() != 0 || *cfgPath == "" {
+	importSet := false
+	fs.Visit(func(f *flag.Flag) { importSet = importSet || f.Name == "import" })
+	if fs.NArg() != 0 || *cfgPath == "" || (importSet && *importPath == "") {
 		fs.Usage()
-		return fmt.Errorf("%w: need -config proxy.json", errUsage)
+		return fmt.Errorf("%w: need -config proxy.json [-import bundle.json]", errUsage)
 	}
 	cfg, err := LoadConfig(*cfgPath)
 	if err != nil {
 		return fmt.Errorf("%w: %v", errUsage, err)
+	}
+	if importSet {
+		return importBundle(cfg, *importPath, stderr)
 	}
 	log := slog.New(slog.NewJSONHandler(stderr, nil))
 	clk := clock.NewReal()
@@ -135,29 +210,22 @@ func run(ctx context.Context, args []string, stderr io.Writer, ready func(addr s
 
 	noteTestOnlyKeys(cfg, stats, log)
 
-	st, err := store.Open(cfg.DataDir)
+	unlock, err := lockDataDir(cfg.DataDir)
 	if err != nil {
-		return fmt.Errorf("data_dir: %w", err)
-	}
-	guard, err := agent.OpenClockGuard(clk, cfg.DataDir)
-	switch {
-	case errors.Is(err, agent.ErrHighWaterCorrupt):
-		log.Warn("high-water file is corrupt; it will be rewritten")
-	case err != nil:
 		return err
+	}
+	defer unlock()
+	st, guard, al, logErr, err := openData(cfg, clk, log)
+	if err != nil {
+		return err
+	}
+	if al != nil {
+		defer al.Close()
 	}
 
 	acfg := agent.Config{
 		CP: cfg.CP, Tenant: cfg.Tenant, ProxyID: cfg.ProxyID, Token: cfg.Token, Root: cfg.Root,
-		Skew: cfg.Skew, Guard: guard, AllowPlaintext: cfg.AllowPlaintext,
-	}
-	al, err := applylog.Open(filepath.Join(cfg.DataDir, applyLogFile), clk)
-	if err != nil {
-		// Do not repair or work around it: boot as Tampered, apply nothing.
-		log.Error("apply log failed verification; starting tampered (deny-all)", "err", err)
-		al, acfg.LogOpenErr = nil, err
-	} else {
-		defer al.Close()
+		Skew: cfg.Skew, Guard: guard, AllowPlaintext: cfg.AllowPlaintext, LogOpenErr: logErr,
 	}
 	dl, err := declog.Open(filepath.Join(cfg.DataDir, decisionLogFile), declog.Options{Metrics: stats})
 	if err != nil {
@@ -188,9 +256,33 @@ func run(ctx context.Context, args []string, stderr io.Writer, ready func(addr s
 	if err != nil {
 		return fmt.Errorf("listen: %w", err)
 	}
+	// The local read-only listener (P-09): bound before anything is served, so
+	// a bad address stops the proxy at start.
+	var lsrv *http.Server
+	var lln net.Listener
+	if cfg.MetricsListen != "" {
+		lln, err = net.Listen("tcp", cfg.MetricsListen)
+		if err != nil {
+			ln.Close()
+			return fmt.Errorf("metrics_listen: %w", err)
+		}
+		lsrv = &http.Server{
+			Handler:           newLocalHandler(cfg.Tenant, cfg.ProxyID, ag.Snapshot, stats),
+			ReadHeaderTimeout: localReadHeaderTimeout,
+			IdleTimeout:       localIdleTimeout,
+			MaxHeaderBytes:    localMaxHeaderBytes,
+		}
+	}
 	srv := enforce.NewServer(cfg.Listen, enforce.New(ecfg, holder, dl, clk, stats))
-	serveErr := make(chan error, 1)
+	serveErr := make(chan error, 2)
 	go func() { serveErr <- srv.Serve(ln) }()
+	if lsrv != nil {
+		go func() { serveErr <- lsrv.Serve(lln) }()
+		if localReady != nil {
+			localReady(lln.Addr().String())
+		}
+		log.Info("local listener", "addr", lln.Addr().String())
+	}
 
 	agentCtx, stopAgent := context.WithCancel(ctx)
 	agentDone := make(chan error, 1)
@@ -210,6 +302,11 @@ func run(ctx context.Context, args []string, stderr io.Writer, ready func(addr s
 	defer cancel()
 	if err := srv.Shutdown(sctx); err != nil {
 		srv.Close()
+	}
+	if lsrv != nil {
+		if err := lsrv.Shutdown(sctx); err != nil {
+			lsrv.Close()
+		}
 	}
 	stopAgent()
 	if err := <-agentDone; err != nil {

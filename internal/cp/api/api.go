@@ -10,6 +10,13 @@
 //     forbidden. Tokens are compared as SHA-256 digests with crypto/subtle.
 //   - Every body goes through http.MaxBytesReader and wire.Decode: unknown
 //     fields and trailing data are 400 bad_request, oversize is 413 too_large.
+//     A published envelope goes through trust.DecodeEnvelope instead, as on a
+//     proxy: a duplicate key or a key spelled in another case is 400 too (Q-D20).
+//   - A proxy's timeline is capped at store.MaxTimeline entries; each entry
+//     dropped adds to kairan_cp_timeline_dropped_total{tenant} (Q-D21). The
+//     timeline response carries the per-proxy counts in
+//     wire.TimelineView.Dropped (proxy ID -> entries dropped; left out when
+//     none), so evidence export can say "N earlier entries dropped".
 //   - Errors are wire.ErrorResponse codes and nothing else; input is never
 //     echoed. Logs and metrics carry validated IDs only.
 //   - A proxy's group and tenant come from the enrollment registry, never from
@@ -193,6 +200,10 @@ func New(cfg Config, st store.Store, clk clock.Clock, log *slog.Logger, m *obs.R
 	s.authFail = m.Counter("kairan_cp_auth_failures_total", "Requests refused by authentication, by wire error code.", "code")
 	s.active = m.Gauge("kairan_cp_active_polls", "Long-polls currently held.")
 	s.active.With().Set(0)
+	dropped := m.Counter("kairan_cp_timeline_dropped_total", "Oldest timeline entries dropped at the per-proxy cap, by tenant.", "tenant")
+	if dn, ok := st.(store.DropNotifier); ok {
+		dn.OnTimelineDrop(func(tenant wire.ID, n int) { dropped.With(tenant).Add(uint64(n)) })
+	}
 	return s
 }
 
@@ -421,11 +432,44 @@ func readBody(w http.ResponseWriter, r *http.Request, limit int64, v any) bool {
 	return false
 }
 
+// readEnvelope reads one signed envelope of at most wire.MaxEnvelopeBytes with
+// trust.DecodeEnvelope, the decoder proxies use (Q-D20): beside the rules of
+// readBody it rejects a duplicate key and a key that is not spelled exactly
+// ("Payload" for "payload"), which encoding/json would accept. It writes the
+// error response itself when it fails.
+func readEnvelope(w http.ResponseWriter, r *http.Request) (wire.Envelope, bool) {
+	if r.ContentLength > wire.MaxEnvelopeBytes {
+		writeErr(w, http.StatusRequestEntityTooLarge, wire.ErrTooLarge)
+		return wire.Envelope{}, false
+	}
+	// One byte of slack lets DecodeEnvelope see the overflow and say so.
+	b, err := io.ReadAll(http.MaxBytesReader(w, r.Body, wire.MaxEnvelopeBytes+1))
+	if err != nil {
+		var tooBig *http.MaxBytesError
+		if errors.As(err, &tooBig) {
+			writeErr(w, http.StatusRequestEntityTooLarge, wire.ErrTooLarge)
+		} else {
+			writeErr(w, http.StatusBadRequest, wire.ErrBadRequest)
+		}
+		return wire.Envelope{}, false
+	}
+	env, err := trust.DecodeEnvelope(b)
+	switch {
+	case err == nil:
+		return env, true
+	case errors.Is(err, wire.ErrBodyTooLarge):
+		writeErr(w, http.StatusRequestEntityTooLarge, wire.ErrTooLarge)
+	default:
+		writeErr(w, http.StatusBadRequest, wire.ErrBadRequest)
+	}
+	return wire.Envelope{}, false
+}
+
 // ---- publish ----
 
 func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
-	var env wire.Envelope
-	if !readBody(w, r, wire.MaxEnvelopeBytes, &env) {
+	env, ok := readEnvelope(w, r)
+	if !ok {
 		return
 	}
 	switch {
@@ -648,7 +692,18 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 	if entries == nil {
 		entries = []wire.TimelineEntry{}
 	}
-	writeJSON(w, wire.TimelineView{Tenant: t, Entries: entries})
+	view := wire.TimelineView{Tenant: t, Entries: entries}
+	if dr, ok := s.st.(store.DropReporter); ok {
+		d, err := dr.TimelineDropped(t)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, wire.ErrInternal)
+			return
+		}
+		if len(d) > 0 { // omitted when nothing was dropped
+			view.Dropped = d
+		}
+	}
+	writeJSON(w, view)
 }
 
 // ---- status ----

@@ -43,6 +43,7 @@ type Config struct {
 	Root           trust.Root
 	Skew           time.Duration
 	Listen         string
+	MetricsListen  string // "" = no local self view and metrics listener (P-09)
 	Upstream       *url.URL
 	APIKeys        map[string]string // API key -> role
 	DataDir        string
@@ -62,6 +63,7 @@ type fileConfig struct {
 	Threshold      *int              `json:"threshold"`
 	Skew           *string           `json:"skew"`
 	Listen         *string           `json:"listen"`
+	MetricsListen  *string           `json:"metrics_listen"`
 	Upstream       *string           `json:"upstream"`
 	APIKeys        map[string]string `json:"api_keys"`
 	DataDir        *string           `json:"data_dir"`
@@ -72,7 +74,7 @@ type fileConfig struct {
 
 var knownFields = map[string]bool{
 	"tenant": true, "proxy_id": true, "cp_url": true, "token": true, "trusted_keys": true,
-	"threshold": true, "skew": true, "listen": true, "upstream": true, "api_keys": true,
+	"threshold": true, "skew": true, "listen": true, "metrics_listen": true, "upstream": true, "api_keys": true,
 	"data_dir": true, "safe_mode": true, "ca_file": true, "allow_plaintext": true,
 }
 
@@ -221,6 +223,21 @@ func (fc *fileConfig) check() (*Config, error) {
 	}
 	c.Listen = *fc.Listen
 
+	if fc.MetricsListen != nil {
+		_, port, err := net.SplitHostPort(*fc.MetricsListen)
+		if err != nil {
+			return bad("metrics_listen", "must be host:port")
+		}
+		n, err := strconv.ParseUint(port, 10, 16)
+		if err != nil {
+			return bad("metrics_listen", "port must be a number from 0 to 65535")
+		}
+		if *fc.MetricsListen == c.Listen && n != 0 {
+			return bad("metrics_listen", "must differ from listen")
+		}
+		c.MetricsListen = *fc.MetricsListen
+	}
+
 	if fc.Upstream == nil {
 		return bad("upstream", "required")
 	}
@@ -237,8 +254,8 @@ func (fc *fileConfig) check() (*Config, error) {
 		return bad("api_keys", "required, an object of API key to role")
 	}
 	for k, role := range fc.APIKeys {
-		if k == "" || role == "" || !printable(k) || !printable(role) {
-			return bad("api_keys", "keys and roles must be non-empty, without spaces or control characters")
+		if k == "" || !printable(k) || !wire.ID(role).Valid() {
+			return bad("api_keys", "keys must be non-empty without spaces or control characters; roles must be IDs (1-63 of a-z, 0-9, -)")
 		}
 	}
 	c.APIKeys = fc.APIKeys

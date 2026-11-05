@@ -389,3 +389,23 @@ func TestHTTPSThroughEnvironmentProxy(t *testing.T) {
 		t.Fatal("a certificate from an unknown CA was accepted")
 	}
 }
+
+// The self view (P-09) shows what the status report shows: state, version,
+// policy hash and the apply-log anchor, read from the same place.
+func TestSnapshotCarriesHashAndLogAnchor(t *testing.T) {
+	r := newRig(t)
+	cp := newFakeCP(t)
+	a := r.begin(cp)
+	if s := a.Snapshot(); s.PolicyHash != "" || s.LogSeq != 0 || s.LogHead != "" || s.AppliedVersion != 0 {
+		t.Fatalf("empty proxy snapshot = %+v", s)
+	}
+	cp.pollFn = serveEnv(r.keys.goodEnv(4, time.Hour), 4)
+	a.pollOnce(t.Context())
+	s, rep := a.Snapshot(), a.report()
+	if s.State != wire.StateEnforcing || s.AppliedVersion != 4 {
+		t.Fatalf("snapshot = %+v", s)
+	}
+	if !s.PolicyHash.Valid() || s.PolicyHash != rep.PolicyHash || s.LogSeq != rep.LogSeq || s.LogHead != rep.LogHead || s.LogSeq == 0 || !s.LogHead.Valid() {
+		t.Fatalf("snapshot %+v differs from report %+v", s, rep)
+	}
+}

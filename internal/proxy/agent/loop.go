@@ -11,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"kairan/internal/trust"
 	"kairan/internal/wire"
 )
 
@@ -203,17 +202,11 @@ func (a *Agent) pollOnce(ctx context.Context) time.Duration {
 }
 
 // onPollBody decodes a 200 body and applies it. The envelope inside is read
-// with the strict decoder (M-D46); the outer version is advisory only.
+// with the strict decoder (M-D46), and so is the wrapper around it (duplicate
+// and case-variant keys are a rejected answer, Q-D27); the outer version is
+// advisory only.
 func (a *Agent) onPollBody(body io.Reader) time.Duration {
-	var raw struct {
-		Version  uint64          `json:"version"`
-		Envelope json.RawMessage `json:"envelope"`
-	}
-	var env wire.Envelope
-	err := wire.Decode(body, wire.MaxEnvelopeBytes+pollSlack, &raw)
-	if err == nil {
-		env, err = trust.DecodeEnvelope(raw.Envelope)
-	}
+	version, env, err := decodePoll(body)
 	if err != nil {
 		var from uint64
 		if a.al != nil {
@@ -222,7 +215,7 @@ func (a *Agent) onPollBody(body io.Reader) time.Duration {
 		a.reject(wire.ErrMalformed, 0, "", from)
 		return a.rejectDelay()
 	}
-	if a.apply(env, raw.Version) {
+	if a.apply(env, version) {
 		return 0
 	}
 	return a.rejectDelay()

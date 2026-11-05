@@ -4,9 +4,11 @@
 //
 // What a line holds, and nothing else: time (UTC), role, tool, allowed, class,
 // version, hash, state. Tool is a validated tool name, "tools/list" or "";
-// role is bounded; class, hash and state are checked against their alphabets.
+// role is a wire.ID (1-63 of [a-z0-9-], as in a policy); class, hash and state are checked against their alphabets.
 // There is no free-text field, so arguments, results and prompts cannot get
-// in (THREATS #7, I4). Record refuses a record that does not fit this shape.
+// in (THREATS #7, I4). Record refuses a record that does not fit this shape. Decode rejects such a
+// line too, and any line with a null field (null would read back as a zero
+// value, for example a plain deny at version 0).
 //
 // Failure is loud. Record returns an error when the line was not stored; the
 // enforce package then denies the call (fail closed, M-D33 item 3). Each

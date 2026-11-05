@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -849,5 +850,89 @@ func TestOpenFilesRefusesFifoDirectory(t *testing.T) {
 				t.Fatal("OpenFiles blocked on a FIFO directory")
 			}
 		})
+	}
+}
+
+// Q-D21: a proxy's timeline keeps at most MaxTimeline entries; the oldest go
+// first and the number dropped is kept, across a reopen too.
+func TestTimelineCapDropsOldest(t *testing.T) {
+	s, dir := open(t)
+	var drops []int
+	s.(DropNotifier).OnTimelineDrop(func(tenant wire.ID, n int) {
+		if tenant != "acme" {
+			t.Errorf("drop tenant %q", tenant)
+		}
+		drops = append(drops, n)
+	})
+	const total = MaxTimeline + 40
+	for i := 0; i < total; i++ { // every report moves the anchor back: a new entry each time
+		r := report("p1", uint64(i+1), 7)
+		r.LogSeq, r.LogHead = uint64(total-i), hh('a')
+		if err := s.RecordStatus(fleet.Last{Group: "g", Report: r, SeenAt: t0.Add(time.Duration(i) * time.Second)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A second proxy is not affected by the first one's drops.
+	if err := s.RecordStatus(fleet.Last{Group: "g", Report: report("p2", 1, 7), SeenAt: t0}); err != nil {
+		t.Fatal(err)
+	}
+	if len(drops) != 40 {
+		t.Fatalf("drop notifications = %d, want 40", len(drops))
+	}
+	for _, st := range []Store{s, reopen(t, dir)} {
+		got, err := st.Timeline("acme")
+		if err != nil || len(got) != MaxTimeline+1 {
+			t.Fatalf("timeline len %d (err %v), want %d", len(got), err, MaxTimeline+1)
+		}
+		if got[0].ProxyID != "p1" || got[0].LogSeq != uint64(total-40) || got[MaxTimeline-1].LogSeq != 1 {
+			t.Fatalf("oldest kept %+v, newest %+v: the wrong entries were dropped", got[0], got[MaxTimeline-1])
+		}
+		d, err := st.(DropReporter).TimelineDropped("acme")
+		if err != nil || !reflect.DeepEqual(d, map[wire.ID]uint64{"p1": 40}) {
+			t.Fatalf("dropped = %v (err %v)", d, err)
+		}
+	}
+	if d, _ := s.(DropReporter).TimelineDropped("nobody"); len(d) != 0 {
+		t.Fatalf("other tenant drops: %v", d)
+	}
+}
+
+// A state file written before the cap, with more entries than allowed, opens
+// and is cut to the newest MaxTimeline entries; the cut is counted.
+func TestOpenTrimsOversizeTimeline(t *testing.T) {
+	s, dir := open(t)
+	for i := 0; i < 5; i++ {
+		r := report("p1", uint64(i+1), 7)
+		r.LogSeq, r.LogHead = uint64(10-i), hh('a')
+		if err := s.RecordStatus(fleet.Last{Group: "g", Report: r, SeenAt: t0.Add(time.Duration(i) * time.Second)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	path := filepath.Join(dir, "fleet", "acme", "p1.json")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pf map[string]any
+	if err := json.Unmarshal(b, &pf); err != nil {
+		t.Fatal(err)
+	}
+	tl := pf["timeline"].([]any)
+	for len(tl) <= MaxTimeline+3 {
+		tl = append(tl, tl...)
+	}
+	pf["timeline"] = tl
+	b, _ = json.Marshal(pf)
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st := reopen(t, dir)
+	got, err := st.Timeline("acme")
+	if err != nil || len(got) != MaxTimeline {
+		t.Fatalf("len %d err %v", len(got), err)
+	}
+	d, _ := st.(DropReporter).TimelineDropped("acme")
+	if d["p1"] != uint64(len(tl)-MaxTimeline) {
+		t.Fatalf("dropped = %v, want %d", d, len(tl)-MaxTimeline)
 	}
 }

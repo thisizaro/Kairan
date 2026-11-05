@@ -45,7 +45,21 @@
 // that resends one bad envelope cannot fill the disk; the rejected counter
 // still counts each one.
 //
+// # Offline import (P-11, PRD J3)
+//
+// Import(data) applies one JSON-encoded envelope from a file after Boot, with
+// no network and no Run: trust.DecodeEnvelope (the strict decoder; a file that
+// is not an envelope is code malformed), then the same apply path as above.
+// It returns Imported (version, previous, hash) or an *ImportError carrying
+// the wire code. A rejection keeps the policy in force, is counted, and is
+// written to the apply log. The caller saves the clock guard afterwards.
+//
 // # Poll loop
+//
+// The 200 body is decoded strictly, by the same rule as trust.DecodeEnvelope:
+// the top-level keys are exactly "version" and "envelope", each once, spelled
+// exactly (a duplicate or a variant such as "Envelope" is a rejected answer,
+// counted and followed by a backoff, malformed_request in last_error).
 //
 // GET /v1/poll?tenant&proxy&have with the bearer token. The client deadline is
 // wire.PollClientTimeout (45s, M-D40). 200 is applied; 304 polls again at once
@@ -94,6 +108,8 @@
 // envelopes_rejected from agent_apply_rejected. Agent counters are
 // agent_apply_ok, agent_apply_rejected, agent_poll_errors,
 // agent_status_errors, agent_policy_expired and agent_boot_tampered.
-// Agent.Snapshot gives the gauges (state, applied version, clock untrusted)
-// for the local metrics listener (P-09).
+// Agent.Snapshot gives the gauges and the self view (state, applied version,
+// policy hash, apply-log seq and head, clock untrusted) for the local
+// listener of cmd/kairan-proxy (P-09); the hash and head are the same values
+// the status report carries.
 package agent
