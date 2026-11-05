@@ -809,6 +809,9 @@ func TestAttackBodiesNeverReachUpstream(t *testing.T) {
 		"deeply nested arguments":      callBody(1, "crm.export", strings.Repeat("[", 500)+strings.Repeat("]", 500)),
 		"tools/list duplicate params":  `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"cursor":"a","cursor":"b"}}`,
 		"tools/list with Capital Meth": `{"jsonrpc":"2.0","id":1,"method":"tools/list","Method":"tools/call","params":{"name":"crm.export"}}`,
+		"method NUL padded":            `{"jsonrpc":"2.0","id":1,"method":"\u0000tools/call","params":{"name":"crm.export"}}`,
+		"method zero-width suffix":     `{"jsonrpc":"2.0","id":1,"method":"tools/call\u200b","params":{"name":"crm.export"}}`,
+		"method RLO prefix":            `{"jsonrpc":"2.0","id":1,"method":"\u202etools/list","params":{"name":"crm.export"}}`,
 	}
 	for name, body := range bodies {
 		t.Run(name, func(t *testing.T) {
@@ -1235,5 +1238,54 @@ func TestInFlightCallKeepsItsPolicy(t *testing.T) {
 	}
 	if rec := r.log.all()[0]; rec.Version != 8 || rec.Hash != hashA || !rec.Allowed {
 		t.Fatalf("%+v", rec)
+	}
+}
+
+// Q-D19 (M-D55): the upstream client never follows a redirect, and a 3xx is an
+// upstream error for the agent: no Location header, no body, no second request.
+func TestUpstreamRedirectIsAnError(t *testing.T) {
+	elsewhere := make(chan string, 4)
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		select {
+		case elsewhere <- string(b):
+		default:
+		}
+	}))
+	defer other.Close()
+	for _, code := range []int{301, 302, 303, 307, 308} {
+		for name, body := range map[string]string{
+			"call":        callBody(1, "notes.read", `{"secret":"s3"}`),
+			"list":        listBody(1),
+			"passthrough": `{"jsonrpc":"2.0","id":1,"method":"ping"}`,
+		} {
+			t.Run(fmt.Sprintf("%d/%s", code, name), func(t *testing.T) {
+				r := newRig(t, nil)
+				r.h.Store(enforcing(t, 8, hashA))
+				r.up.over = func(w http.ResponseWriter, req *http.Request, b []byte) bool {
+					w.Header().Set("Location", other.URL+"/x")
+					w.WriteHeader(code)
+					return true
+				}
+				rep := r.post("key-boss", body)
+				if rep.Status != 502 {
+					t.Fatalf("status %d: %s", rep.Status, rep.Body)
+				}
+				if rep.Header.Get("Location") != "" || strings.Contains(rep.Body, other.URL) {
+					t.Fatalf("redirect leaked to the agent: %v %s", rep.Header, rep.Body)
+				}
+				if n := len(r.up.requests()); n != 1 {
+					t.Fatalf("upstream saw %d requests", n)
+				}
+				select {
+				case got := <-elsewhere:
+					t.Fatalf("redirect target received %q", got)
+				default:
+				}
+				if r.m.get("enforce_upstream_errors") != 1 {
+					t.Fatalf("upstream error not counted")
+				}
+			})
+		}
 	}
 }

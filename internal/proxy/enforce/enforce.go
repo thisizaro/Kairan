@@ -440,6 +440,8 @@ func (p *proxy) list(w http.ResponseWriter, r *http.Request, role string, env en
 	_, _ = w.Write(out)
 }
 
+var errRedirect = errors.New("upstream answered with a redirect")
+
 var errBadStatus = errors.New("upstream answered with an unexpected status")
 
 // send builds and sends the upstream request. body is the exact bytes that
@@ -470,6 +472,13 @@ func (p *proxy) send(r *http.Request, method string, body []byte, timeout, ident
 	if err != nil {
 		cancel()
 		return nil, func() {}, err
+	}
+	// Q-D19 (M-D55): the client never follows a redirect and the agent never
+	// sees one (no Location, no body): a 3xx is an upstream error.
+	if resp.StatusCode >= 300 && resp.StatusCode <= 399 {
+		resp.Body.Close()
+		cancel()
+		return nil, func() {}, errRedirect
 	}
 	return resp, cancel, nil
 }
