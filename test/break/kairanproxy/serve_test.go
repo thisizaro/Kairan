@@ -128,6 +128,12 @@ func TestEndToEnd(t *testing.T) {
 	l.start("", nil, nil)
 	l.waitAllowed()
 	h := hashOf(l.envelope.Payload)
+	// waitAllowed probes during DenyAll before the apply; its last probe is the first allowed call.
+	preApply := l.decisions()
+	if len(preApply) < 1 {
+		t.Fatal("waitAllowed left no decision line")
+	}
+	nPre := len(preApply) - 1
 
 	if r := l.p.call(keySales, callBody("crm.update_deal", `{"note":"`+canary+`"}`)); !allowed(r) {
 		t.Errorf("W tool for sales denied: %+v", r)
@@ -151,13 +157,20 @@ func TestEndToEnd(t *testing.T) {
 	if len(lines) < 4 {
 		t.Fatalf("%d decision lines", len(lines))
 	}
-	for _, ln := range lines {
+	for i, ln := range lines {
 		rc, err := declog.Decode([]byte(ln))
 		if err != nil {
 			t.Fatalf("decision line does not decode: %v: %q", err, ln)
 		}
+		if i < nPre {
+			// decided before the policy applied: stamped with what was in force then (I5)
+			if rc.Version != 0 || rc.Hash != "" || rc.State != wire.StateDenyAll || rc.Allowed {
+				t.Errorf("pre-apply decision %d stamped %+v, want version 0, no hash, deny_all, denied (I5)", i, rc)
+			}
+			continue
+		}
 		if rc.Version != 7 || rc.Hash != h || rc.State != wire.StateEnforcing {
-			t.Errorf("decision stamped version=%d hash=%s state=%s, want 7 %s enforcing (I5)", rc.Version, rc.Hash, rc.State, h)
+			t.Errorf("decision %d stamped version=%d hash=%s state=%s, want 7 %s enforcing (I5)", i, rc.Version, rc.Hash, rc.State, h)
 		}
 	}
 	// apply log verifies and records the apply
