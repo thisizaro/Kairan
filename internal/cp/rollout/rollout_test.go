@@ -1,6 +1,8 @@
 package rollout
 
 import (
+	"fmt"
+	"math/rand/v2"
 	"reflect"
 	"testing"
 	"time"
@@ -298,10 +300,9 @@ func TestStepPromoting(t *testing.T) {
 				t.Fatalf("got phase=%q reason=%q want phase=%q reason=%q", got.Phase, got.Reason, tc.phase, tc.reason)
 			}
 			for g, v := range des {
+				// M-D44: a halt while promoting freezes every group at the new
+				// version; nothing goes back down.
 				wantV := uint64(ver)
-				if tc.phase == wire.PhaseHalted && g != CanaryGroup {
-					wantV = prevVer
-				}
 				if v != wantV {
 					t.Errorf("group %q desired %d want %d", g, v, wantV)
 				}
@@ -394,6 +395,91 @@ func TestStepNeverLowersDesired(t *testing.T) {
 	}
 }
 
+// M-D44: Halted freezes each group's desired version where it was when the
+// rollout halted. A halt while promoting must not send moved groups back.
+func TestPromotingThenHaltedKeepsDesired(t *testing.T) {
+	canary := px{id: "c1", group: CanaryGroup, applied: ver}
+	bad := func(id wire.ID) px {
+		return px{id: id, group: "main", applied: prevVer, err: &wire.ApplyError{Code: wire.ErrPersist, Version: ver}}
+	}
+	r := rollout(wire.PhasePromoting)
+	r, des := Step(r, fleetOf(canary, px{id: "m1", group: "main", applied: prevVer}), t0)
+	if r.Phase != wire.PhasePromoting || des["main"] != ver {
+		t.Fatalf("promoting: %+v %v", r, des)
+	}
+	r, des = Step(r, fleetOf(canary, bad("m1")), t0.Add(time.Second))
+	if r.Phase != wire.PhaseHalted || r.Reason != wire.ErrPersist {
+		t.Fatalf("want halt, got %+v", r)
+	}
+	if des["main"] != ver || des[CanaryGroup] != ver {
+		t.Fatalf("halt lowered desired: %v", des)
+	}
+	for _, g := range []wire.ID{CanaryGroup, "main", "eu"} {
+		if got := DesiredFor(r, g); got != ver {
+			t.Errorf("DesiredFor(%s) = %d, want %d", g, got, ver)
+		}
+	}
+	// Still frozen on later Steps, whatever the fleet looks like.
+	r2, des := Step(r, fleetOf(), t0.Add(time.Hour))
+	if r2 != r {
+		t.Fatalf("halted rollout changed: %+v", r2)
+	}
+	_, des = Step(r, fleetOf(px{id: "m1", group: "main", applied: prevVer}), t0.Add(2*time.Hour))
+	if des["main"] != ver {
+		t.Fatalf("later step: %v", des)
+	}
+	// Halt in Canary still keeps main groups at Previous.
+	rc, des := Step(canaryRollout(), fleetOf(px{id: "c1", group: CanaryGroup, applied: prevVer, health: wire.HealthLost}, px{id: "m1", group: "main", applied: prevVer}), t0)
+	if rc.Phase != wire.PhaseHalted || des["main"] != prevVer || des[CanaryGroup] != ver {
+		t.Fatalf("canary halt: %+v %v", rc, des)
+	}
+}
+
+// Property (M-D44): over random fleets and random times, no group's desired
+// version ever goes down between Steps, and DesiredFor agrees with Step.
+func TestDesiredNeverDecreasesProperty(t *testing.T) {
+	rng := rand.New(rand.NewPCG(1, 2))
+	groups := []wire.ID{CanaryGroup, "main", "eu"}
+	healths := []wire.Health{wire.HealthHealthy, wire.HealthStale, wire.HealthLost}
+	states := []wire.ProxyState{wire.StateEnforcing, wire.StateTampered}
+	for iter := 0; iter < 3000; iter++ {
+		r := Start(wire.RolloutRequest{Tenant: "acme", Version: ver, CanaryDwellSeconds: uint64(rng.IntN(3))}, prevVer, t0, dwell)
+		last := map[wire.ID]uint64{}
+		now := t0
+		for step := 0; step < 12; step++ {
+			var ps []px
+			for i := 0; i < rng.IntN(7); i++ {
+				p := px{id: wire.ID(fmt.Sprintf("p%d", i)), group: groups[rng.IntN(len(groups))],
+					health: healths[rng.IntN(len(healths))], state: states[rng.IntN(len(states))]}
+				if rng.IntN(2) == 0 {
+					p.applied = ver
+				} else {
+					p.applied = prevVer
+				}
+				if rng.IntN(4) == 0 {
+					p.err = &wire.ApplyError{Code: wire.ErrPersist, Version: ver}
+				}
+				ps = append(ps, p)
+			}
+			now = now.Add(time.Duration(rng.IntN(3)) * time.Second)
+			var des map[wire.ID]uint64
+			r, des = Step(r, fleetOf(ps...), now)
+			for _, g := range groups {
+				if d := DesiredFor(r, g); d < last[g] {
+					t.Fatalf("iter %d step %d: group %s desired %d < %d (phase %s)", iter, step, g, d, last[g], r.Phase)
+				} else {
+					last[g] = d
+				}
+			}
+			for g, d := range des {
+				if d != DesiredFor(r, g) {
+					t.Fatalf("Step desired %d != DesiredFor %d for %s", d, DesiredFor(r, g), g)
+				}
+			}
+		}
+	}
+}
+
 func TestStepMalformedRolloutHalts(t *testing.T) {
 	f := fleetOf(px{id: "c1", group: CanaryGroup, applied: ver}, px{id: "m1", group: "main", applied: ver})
 	tests := []struct {
@@ -447,6 +533,25 @@ func TestDesiredCoversEveryGroupInView(t *testing.T) {
 	want = map[wire.ID]uint64{CanaryGroup: ver, "main": ver, "eu": ver}
 	if !reflect.DeepEqual(des, want) {
 		t.Fatalf("promoting: got %v want %v", des, want)
+	}
+}
+
+// DesiredFor is the single rule the fleet page and Step both use (C-06).
+func TestDesiredForMatchesStep(t *testing.T) {
+	view := fleetOf(px{id: "c1", group: CanaryGroup}, px{id: "m1", group: "main"})
+	for _, phase := range []wire.RolloutPhase{wire.PhaseCanary, wire.PhasePromoting, wire.PhaseHalted, wire.PhaseComplete} {
+		r := rollout(phase)
+		// Compare with desired() directly: Step may advance the phase first.
+		want := desired(r, view)
+		for _, g := range []wire.ID{CanaryGroup, "main"} {
+			if got := DesiredFor(r, g); got != want[g] {
+				t.Errorf("%s/%s: DesiredFor = %d, desired = %d", phase, g, got, want[g])
+			}
+		}
+	}
+	r := rollout(wire.PhaseHalted)
+	if DesiredFor(r, CanaryGroup) != ver || DesiredFor(r, "main") != prevVer {
+		t.Errorf("halted: canary stays at the new version, others at previous")
 	}
 }
 

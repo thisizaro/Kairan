@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="refresh" content="10">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kairan フリート状況 - bank-a</title>
+<link rel="stylesheet" href="static/fleet.css">
+</head>
+<body>
+<header>
+<h1>Kairan フリート状況</h1>
+<p><a href="?lang=en&amp;tenant=bank-a" hreflang="en" lang="en">English</a></p>
+<dl class="meta">
+<dt>テナント</dt><dd>bank-a</dd>
+<dt>表示時刻</dt><dd>2026-11-05 12:00:00 JST / 2026-11-05 03:00:00 UTC</dd>
+</dl>
+<p class="note">10秒ごとに自動更新します。</p>
+</header>
+<main>
+<section>
+<h2>概要</h2>
+<ul class="stats">
+<li class="stat"><span class="n">4</span> プロキシ合計</li>
+<li class="stat"><span class="n">2</span> 正常</li>
+<li class="stat alarm"><span class="n">1</span> 遅延</li>
+<li class="stat alarm"><span class="n">1</span> 途絶</li>
+<li class="stat alarm"><span class="n">1</span> 改ざん検知</li>
+<li class="stat alarm"><span class="n">1</span> セーフモード</li>
+<li class="stat alarm"><span class="n">1</span> 時計が信頼できません</li>
+</ul>
+</section>
+<section>
+<h2>ロールアウト</h2>
+<dl class="meta">
+<dt>バージョン</dt><dd>8</dd>
+<dt>フェーズ</dt><dd class="phase-canary">カナリア</dd>
+</dl>
+</section>
+<section>
+<h2>プロキシ一覧</h2>
+<table>
+<thead><tr>
+<th scope="col">プロキシ</th>
+<th scope="col">グループ</th>
+<th scope="col">稼働状況</th>
+<th scope="col">状態</th>
+<th scope="col">目標バージョン</th>
+<th scope="col">適用済みバージョン</th>
+<th scope="col">差分</th>
+<th scope="col">ポリシーハッシュ</th>
+<th scope="col">最終受信</th>
+<th scope="col">最後のエラー</th>
+</tr></thead>
+<tbody>
+<tr class="health-lost">
+<th scope="row">px-main-2</th>
+<td>main</td>
+<td class="health-lost">途絶</td>
+<td class="state-tampered">改ざん検知(全拒否)</td>
+<td>7</td>
+<td>-</td>
+<td class="drift-behind">7 バージョン遅れ</td>
+<td><code>-</code></td>
+<td>2026-11-05 10:00:00 JST<br>2026-11-05 01:00:00 UTC</td>
+<td><code>tampered</code> 保存されたポリシーが改ざんされています</td>
+</tr>
+<tr class="health-stale">
+<th scope="row">px-main-1</th>
+<td>main</td>
+<td class="health-stale">遅延</td>
+<td class="state-enforcing">適用中</td>
+<td>7</td>
+<td>6</td>
+<td class="drift-behind">1 バージョン遅れ</td>
+<td><code>cccccccccccc</code></td>
+<td>2026-11-05 11:59:15 JST<br>2026-11-05 02:59:15 UTC</td>
+<td>なし</td>
+</tr>
+<tr class="health-healthy">
+<th scope="row">px-canary-1</th>
+<td>canary</td>
+<td class="health-healthy">正常</td>
+<td class="state-enforcing">適用中</td>
+<td>8</td>
+<td>8</td>
+<td class="drift-sync">同期済み</td>
+<td><code>bbbbbbbbbbbb</code></td>
+<td>2026-11-05 11:59:55 JST<br>2026-11-05 02:59:55 UTC</td>
+<td>なし</td>
+</tr>
+<tr class="health-healthy">
+<th scope="row">px-main-3</th>
+<td>main</td>
+<td class="health-healthy">正常</td>
+<td class="state-safe_mode">セーフモード</td>
+<td>7</td>
+<td>7</td>
+<td class="drift-sync">同期済み</td>
+<td><code>aaaaaaaaaaaa</code></td>
+<td>2026-11-05 11:59:57 JST<br>2026-11-05 02:59:57 UTC</td>
+<td><code>clock_untrusted</code> 時計が信頼できません (v8)</td>
+</tr>
+</tbody>
+</table>
+</section>
+</main>
+</body>
+</html>

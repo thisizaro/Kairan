@@ -1,0 +1,22 @@
+body { font-family: system-ui, "Hiragino Sans", "Noto Sans JP", "Yu Gothic", sans-serif; margin: 1.5rem; color: #1a1a1a; background: #fff; }
+h1 { font-size: 1.4rem; margin: 0 0 .5rem; }
+h2 { font-size: 1.1rem; margin: 1.5rem 0 .5rem; }
+.meta { display: grid; grid-template-columns: max-content 1fr; gap: .2rem 1rem; margin: .5rem 0; }
+.meta dt { font-weight: bold; }
+.meta dd { margin: 0; }
+.note { color: #555; font-size: .9rem; }
+.stats { list-style: none; padding: 0; display: flex; flex-wrap: wrap; gap: .5rem; }
+.stat { border: 1px solid #bbb; border-radius: 4px; padding: .3rem .7rem; }
+.stat .n { font-weight: bold; font-size: 1.1rem; }
+.alarm { border-color: #b00020; color: #b00020; font-weight: bold; }
+table { border-collapse: collapse; width: 100%; font-size: .9rem; }
+th, td { border: 1px solid #ccc; padding: .3rem .5rem; text-align: left; vertical-align: top; }
+thead th { background: #f2f2f2; }
+code { font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; }
+td.health-healthy { color: #1b6e2d; }
+td.health-stale { color: #8a5a00; font-weight: bold; }
+td.health-lost { color: #b00020; font-weight: bold; }
+td.state-tampered, td.state-safe_mode { color: #b00020; font-weight: bold; }
+td.drift-behind, td.drift-ahead { color: #8a5a00; font-weight: bold; }
+.phase-halted { color: #b00020; font-weight: bold; }
+a { color: #0b57d0; }

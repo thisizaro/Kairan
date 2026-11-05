@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="{{.Lang}}">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="refresh" content="10">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{t "title"}} - {{.Tenant}}</title>
+<link rel="stylesheet" href="static/fleet.css">
+</head>
+<body>
+<header>
+<h1>{{t "title"}}</h1>
+<p><a href="{{.SwitchURL}}" hreflang="{{.SwitchLang}}" lang="{{.SwitchLang}}">{{t "lang.switch"}}</a></p>
+<dl class="meta">
+<dt>{{t "tenant"}}</dt><dd>{{.Tenant}}</dd>
+<dt>{{t "generated"}}</dt><dd>{{.Now.JST}} / {{.Now.UTC}}</dd>
+</dl>
+<p class="note">{{t "refresh"}}</p>
+</header>
+<main>
+<section>
+<h2>{{t "summary"}}</h2>
+<ul class="stats">
+{{range .Stats}}<li class="stat{{if .Alarm}} alarm{{end}}"><span class="n">{{.N}}</span> {{.Label}}</li>
+{{end}}</ul>
+</section>
+<section>
+<h2>{{t "rollout"}}</h2>
+{{if .Rollout}}<dl class="meta">
+<dt>{{t "rollout.version"}}</dt><dd>{{.Rollout.Version}}</dd>
+<dt>{{t "rollout.phase"}}</dt><dd class="phase-{{.Rollout.Class}}">{{.Rollout.Phase}}</dd>
+{{if .Rollout.Reason}}<dt>{{t "rollout.reason"}}</dt><dd class="alarm"><code>{{.Rollout.ReasonCode}}</code> {{.Rollout.Reason}}</dd>
+{{end}}</dl>
+{{else}}<p>{{t "rollout.none"}}</p>
+{{end}}</section>
+<section>
+<h2>{{t "fleet"}}</h2>
+{{if .Rows}}<table>
+<thead><tr>
+<th scope="col">{{t "col.proxy"}}</th>
+<th scope="col">{{t "col.group"}}</th>
+<th scope="col">{{t "col.health"}}</th>
+<th scope="col">{{t "col.state"}}</th>
+<th scope="col">{{t "col.desired"}}</th>
+<th scope="col">{{t "col.applied"}}</th>
+<th scope="col">{{t "col.drift"}}</th>
+<th scope="col">{{t "col.hash"}}</th>
+<th scope="col">{{t "col.seen"}}</th>
+<th scope="col">{{t "col.error"}}</th>
+</tr></thead>
+<tbody>
+{{range .Rows}}<tr class="health-{{.HealthClass}}">
+<th scope="row">{{.Proxy}}</th>
+<td>{{.Group}}</td>
+<td class="health-{{.HealthClass}}">{{.Health}}</td>
+<td class="state-{{.StateClass}}">{{.State}}</td>
+<td>{{.Desired}}</td>
+<td>{{.Applied}}</td>
+<td class="drift-{{.DriftClass}}">{{.Drift}}</td>
+<td><code>{{.Hash}}</code></td>
+<td>{{if .Seen}}{{.Seen.JST}}<br>{{.Seen.UTC}}{{else}}{{t "never"}}{{end}}</td>
+<td>{{if .ErrCode}}<code>{{.ErrCode}}</code> {{.ErrText}}{{if .ErrVersion}} (v{{.ErrVersion}}){{end}}{{else}}{{t "none"}}{{end}}</td>
+</tr>
+{{end}}</tbody>
+</table>
+{{else}}<p>{{t "empty"}}</p>
+{{end}}</section>
+</main>
+</body>
+</html>

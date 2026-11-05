@@ -5,9 +5,10 @@
 // A new version first goes to the canary group only. When every canary proxy
 // has applied it and stayed healthy for the dwell time, the version goes to
 // all groups. A canary apply error or a lost canary halts the rollout, and a
-// halted rollout never promotes. Rollback is not a state: the admin re-publishes
-// the old content as a new, higher version and starts a new rollout, so no
-// group's desired version is ever lowered.
+// halted rollout never promotes. Halting freezes every group's desired version
+// where it was at that moment (M-D44). Rollback is not a state: the admin
+// re-publishes the old content as a new, higher version and starts a new
+// rollout, so no group's desired version is ever lowered.
 //
 // The package does no I/O and never reads the clock; the caller passes "now"
 // (ARCHITECTURE R2, R3).
@@ -42,6 +43,11 @@ type Rollout struct {
 	Reason   wire.ErrorCode    // set when Halted
 	Dwell    time.Duration     // canary must stay healthy this long
 	CanaryOK time.Time         // when every canary proxy first acked Version; zero until then
+	// Promoted is set when the rollout halts because of promotion errors:
+	// every group had already been moved to Version, so Halted keeps them
+	// there (M-D44). A malformed rollout (wrong tenant, bad version) halts
+	// without it: it never raises a group.
+	Promoted bool
 }
 
 // Start begins a rollout in the Canary phase. A request that cannot be a
@@ -89,7 +95,9 @@ func Start(req wire.RolloutRequest, previous uint64, now time.Time, defaultDwell
 //   - Promoting: every group is desired Version. Halts when the share of
 //     non-canary proxies that failed to apply it exceeds PromoteErrorPercent.
 //     Completes when every proxy that is not lost has applied Version.
-//   - Halted: canary stays at Version, others at Previous. Terminal.
+//   - Halted: every group keeps the version it had when the rollout halted
+//     (M-D44). Halted in Canary: canary at Version, others at Previous. Halted
+//     in Promoting: every group at Version. Terminal.
 //   - Complete: every group at Version. Terminal.
 //
 // No group is ever desired less than Previous. Step does not modify its inputs.
@@ -181,6 +189,7 @@ func stepPromoting(r Rollout, fleet wire.FleetView) Rollout {
 		}
 	}
 	if first != nil && failed*100 > PromoteErrorPercent*len(main) {
+		r.Promoted = true // every group is already at Version; keep it there (M-D44)
 		return halt(r, first.LastError.Code)
 	}
 	reachable := 0
@@ -212,20 +221,26 @@ func sortedByID(ps []wire.ProxyView) []wire.ProxyView {
 	return out
 }
 
-// desired computes the version each group in the view should run. Never below Previous.
-func desired(r Rollout, fleet wire.FleetView) map[wire.ID]uint64 {
+// DesiredFor is the version a group should run under r: the canary group gets
+// the new version at once, other groups only once promoting or complete. A
+// halted rollout keeps what each group had when it halted: Version for all
+// groups if it halted while promoting, else Previous for non-canary groups. Never
+// below Previous. Step uses it for every group; the fleet page uses it to show
+// the desired version without stepping the rollout.
+func DesiredFor(r Rollout, group wire.ID) uint64 {
 	canary := max(r.Version, r.Previous)
-	main := r.Previous
-	if r.Phase == wire.PhasePromoting || r.Phase == wire.PhaseComplete {
-		main = canary
+	if group == CanaryGroup || r.Phase == wire.PhasePromoting || r.Phase == wire.PhaseComplete ||
+		(r.Phase == wire.PhaseHalted && r.Promoted) {
+		return canary
 	}
+	return r.Previous
+}
+
+// desired computes the version each group in the view should run.
+func desired(r Rollout, fleet wire.FleetView) map[wire.ID]uint64 {
 	out := make(map[wire.ID]uint64)
 	for _, p := range fleet.Proxies {
-		if p.Group == CanaryGroup {
-			out[p.Group] = canary
-		} else {
-			out[p.Group] = main
-		}
+		out[p.Group] = DesiredFor(r, p.Group)
 	}
 	return out
 }
