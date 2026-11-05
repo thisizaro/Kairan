@@ -22,6 +22,14 @@
 // log_seq with another log_head. A regression is its own period, so the
 // higher anchor stays on record and evidence sees it before the lower one.
 //
+// A proxy's timeline holds at most MaxTimeline entries (Q-D21): without a cap,
+// a proxy that keeps reporting a moving apply-log anchor would grow the
+// control plane's state without bound. When it is full the oldest entry is
+// dropped, the number dropped is kept (it survives a restart) and is available
+// from DropReporter, and DropNotifier tells the caller as it happens (the API
+// counts kairan_cp_timeline_dropped_total{tenant}). A state file with more
+// entries than the cap is cut to the newest MaxTimeline when it is opened.
+//
 // Only metadata is stored (I4): the signed envelopes an admin published, and
 // the fields of a StatusReport. Nothing is read from a proxy's call data.
 package store
@@ -43,6 +51,25 @@ var (
 	// The message names the file, never its content.
 	ErrCorrupt = errors.New("store: corrupt state file")
 )
+
+// MaxTimeline is the most timeline entries kept for one proxy (Q-D21).
+const MaxTimeline = 256
+
+// DropNotifier is implemented by stores that cap the timeline (OpenFiles does).
+// OnTimelineDrop sets the function called, with the store's lock held (so it
+// must be brief and must not call the store), each time RecordStatus drops
+// n oldest entries of a proxy in tenant. Set it before the store is used.
+type DropNotifier interface {
+	OnTimelineDrop(fn func(tenant wire.ID, n int))
+}
+
+// DropReporter is implemented by stores that cap the timeline (OpenFiles
+// does). TimelineDropped returns, for each of the tenant's proxies that has
+// lost entries, how many earlier timeline entries were dropped; proxies that
+// lost none are not in the map.
+type DropReporter interface {
+	TimelineDropped(tenant wire.ID) (map[wire.ID]uint64, error)
+}
 
 // EnvelopeMeta is what the store needs to know about a published envelope. The
 // caller (the publish handler) fills it from trust.Verified after the

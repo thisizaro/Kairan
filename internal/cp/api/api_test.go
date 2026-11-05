@@ -507,6 +507,13 @@ func TestStrictDecoding(t *testing.T) {
 		{"rollout invalid", wire.PathRollouts, adminTok, `{"tenant":"acme","version":0}`},
 		{"publish unknown field", wire.PathPolicies, adminTok, withExtra(envJSON)},
 		{"publish trailing data", wire.PathPolicies, adminTok, envJSON + `[]`},
+		{"publish duplicate signatures key", wire.PathPolicies, adminTok, strings.TrimSuffix(envJSON, "}") + `,"signatures":[]}`},
+		{"publish duplicate payload key", wire.PathPolicies, adminTok, strings.TrimSuffix(envJSON, "}") + `,"payload":"e30="}`},
+		{"publish case-variant payloadType", wire.PathPolicies, adminTok, strings.Replace(envJSON, `"payloadType"`, `"PayloadType"`, 1)},
+		{"publish case-variant payload", wire.PathPolicies, adminTok, strings.Replace(envJSON, `"payload"`, `"Payload"`, 1)},
+		{"publish case-variant signatures", wire.PathPolicies, adminTok, strings.Replace(envJSON, `"signatures"`, `"Signatures"`, 1)},
+		{"publish case-variant keyid", wire.PathPolicies, adminTok, strings.Replace(envJSON, `"keyid"`, `"KeyID"`, 1)},
+		{"publish duplicate sig key", wire.PathPolicies, adminTok, strings.Replace(envJSON, `"keyid"`, `"sig":"AA==","keyid"`, 1)},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1012,5 +1019,34 @@ func TestEnrolledProxiesMetric(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("metrics lack %q:\n%s", want, out)
 		}
+	}
+}
+
+// Q-D21: past store.MaxTimeline entries for one proxy, the oldest are dropped
+// and kairan_cp_timeline_dropped_total{tenant} counts them.
+func TestTimelineDropsAreCounted(t *testing.T) {
+	e := newEnv(t)
+	const extra = 4
+	for i := 0; i < store.MaxTimeline+extra; i++ {
+		seq := uint64(1000 - i) // the anchor goes back every time: one new entry each report
+		e.mustReport("p-main1", 0, func(r *wire.StatusReport) { r.LogSeq = seq })
+	}
+	e.mustReport("p-beta", 0)
+	rec := httptest.NewRecorder()
+	e.reg.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/metrics", nil))
+	if want := fmt.Sprintf(`kairan_cp_timeline_dropped_total{tenant="acme"} %d`, extra); !strings.Contains(rec.Body.String(), want) {
+		t.Errorf("metrics lack %q:\n%s", want, rec.Body)
+	}
+	if strings.Contains(rec.Body.String(), `kairan_cp_timeline_dropped_total{tenant="beta"}`) {
+		t.Error("tenant beta dropped nothing but has a series")
+	}
+	rec = e.do("GET", wire.PathTimeline+"?tenant="+string(tenant), adminTok, nil)
+	var tv wire.TimelineView
+	if err := json.Unmarshal(rec.Body.Bytes(), &tv); err != nil || len(tv.Entries) != store.MaxTimeline {
+		t.Fatalf("timeline: %d entries, err %v", len(tv.Entries), err)
+	}
+	d, err := e.st.(store.DropReporter).TimelineDropped(tenant)
+	if err != nil || d["p-main1"] != extra {
+		t.Fatalf("dropped = %v, err %v", d, err)
 	}
 }
