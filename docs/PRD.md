@@ -1,6 +1,6 @@
 # Kairan (回覧): Product Requirements
 
-Source: `docs/superpowers/specs/2026-11-05-kairan-design.md` (approved 2026-11-05). If this file and the source disagree, stop and file an `incident`.
+Source: Aro's approved design of 2026-11-05 (not in this repository). This PRD is the top source of truth. If this file and the source disagree, stop and file an `incident`.
 Independent project; not affiliated with RAYVEN. Anything about Tumiki comes from public pages and is marked *(assumption)* where guessed.
 
 ## 1. Problem
@@ -93,7 +93,7 @@ No Tumiki clone (no PII masking, virtual-MCP builder, connectors). Not a full MC
 
 ## 10. Acceptance criteria (definition of done)
 1. Invariants I1-I6 each have passing tests (unit, fuzz where applicable, `-race`).
-2. Chaos S1-S10 pass automatically (see ARCHITECTURE.md / design §10.3); S11 (k3d) is a stretch.
+2. Chaos S1-S10 pass automatically (defined in ARCHITECTURE.md §11); S11 (k3d) is a stretch.
 3. `make ci` green on main: vet, staticcheck, `test -race`, fuzz smoke, JSONL checks, govulncheck.
 4. RESULTS.md generated from a clean checkout by `make bench`; M5, M6, M8 meet their targets; other results reported honestly.
 5. Go stdlib only, unless a decision entry justifies an addition.
