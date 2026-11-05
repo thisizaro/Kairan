@@ -17,6 +17,7 @@ package state
 import (
 	"fmt"
 
+	"kairan/internal/policy"
 	"kairan/internal/wire"
 )
 
@@ -103,10 +104,8 @@ func Next(s wire.ProxyState, e Event) wire.ProxyState {
 //
 // An unknown safe mode counts as deny_all.
 //
-// TODO(P-02): the architecture drafts Allows(s, policy.Decision, mode). The
-// policy package (lane T) is not merged into lane P yet, so this core takes
-// the two Decision fields it needs. A one-line Allows wrapper over
-// policy.Decision belongs next to it once T merges (see decision P-D1).
+// Allows takes the two Decision fields it reads (decision P-D1); use
+// AllowsDecision when you hold a policy.Decision.
 func Allows(s wire.ProxyState, allowed bool, class byte, mode SafeMode) bool {
 	switch s {
 	case wire.StateEnforcing:
@@ -115,4 +114,10 @@ func Allows(s wire.ProxyState, allowed bool, class byte, mode SafeMode) bool {
 		return mode == ReadOnly && allowed && class == 'R'
 	}
 	return false
+}
+
+// AllowsDecision is Allows over a policy.Decision, the signature the
+// architecture drafts (Go has no overloading, so it has its own name).
+func AllowsDecision(s wire.ProxyState, d policy.Decision, mode SafeMode) bool {
+	return Allows(s, d.Allowed, byte(d.Class), mode)
 }
