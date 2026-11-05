@@ -327,11 +327,11 @@ func TestTimeline(t *testing.T) {
 	ms := func(d time.Duration) int64 { return t0.Add(d).UnixMilli() }
 	want := []wire.TimelineEntry{
 		{ProxyID: "p1", Version: 0, FirstSeenUnixMs: ms(0), LastSeenUnixMs: ms(0)},
-		{ProxyID: "p1", Version: 7, PolicyHash: hh('7'), FirstSeenUnixMs: ms(10 * time.Second), LastSeenUnixMs: ms(25 * time.Second)},
-		{ProxyID: "p1", Version: 8, PolicyHash: hh('8'), FirstSeenUnixMs: ms(30 * time.Second), LastSeenUnixMs: ms(40 * time.Second)},
-		{ProxyID: "p1", Version: 0, FirstSeenUnixMs: ms(50 * time.Second), LastSeenUnixMs: ms(50 * time.Second)},
-		{ProxyID: "p1", Version: 8, PolicyHash: hh('8'), FirstSeenUnixMs: ms(60 * time.Second), LastSeenUnixMs: ms(60 * time.Second)},
-		{ProxyID: "p2", Version: 8, PolicyHash: hh('8'), FirstSeenUnixMs: ms(5 * time.Second), LastSeenUnixMs: ms(5 * time.Second)},
+		{ProxyID: "p1", Version: 7, PolicyHash: hh('7'), FirstSeenUnixMs: ms(10 * time.Second), LastSeenUnixMs: ms(25 * time.Second), LogSeq: 1, LogHead: hh('b')},
+		{ProxyID: "p1", Version: 8, PolicyHash: hh('8'), FirstSeenUnixMs: ms(30 * time.Second), LastSeenUnixMs: ms(40 * time.Second), LogSeq: 2, LogHead: hh('c')},
+		{ProxyID: "p1", Version: 0, FirstSeenUnixMs: ms(50 * time.Second), LastSeenUnixMs: ms(50 * time.Second), LogSeq: 2, LogHead: hh('c')},
+		{ProxyID: "p1", Version: 8, PolicyHash: hh('8'), FirstSeenUnixMs: ms(60 * time.Second), LastSeenUnixMs: ms(60 * time.Second), LogSeq: 3, LogHead: hh('d')},
+		{ProxyID: "p2", Version: 8, PolicyHash: hh('8'), FirstSeenUnixMs: ms(5 * time.Second), LastSeenUnixMs: ms(5 * time.Second), LogSeq: 1, LogHead: hh('b')},
 	}
 	for name, st := range map[string]Store{"live": s, "reopened": reopen(t, dir)} {
 		got, err := st.Timeline("acme")

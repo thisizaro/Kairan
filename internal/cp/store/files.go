@@ -54,8 +54,8 @@ type rolloutFile struct {
 }
 
 // tlRec is a timeline entry plus the apply-log anchor of the latest report
-// seen while it was current (M-D35). wire.TimelineEntry has no anchor fields
-// yet; see the change-request that asks for them.
+// seen while it was current (M-D35). It is stored beside the embedded entry
+// and copied into wire.TimelineEntry.LogSeq/LogHead by Timeline.
 type tlRec struct {
 	wire.TimelineEntry
 	LogSeq  uint64    `json:"log_seq"`
@@ -548,7 +548,9 @@ func (f *files) Timeline(tenant wire.ID) ([]wire.TimelineEntry, error) {
 	defer f.mu.RUnlock()
 	out := []wire.TimelineEntry{}
 	for _, e := range f.timelineLocked(tenant) {
-		out = append(out, e.TimelineEntry)
+		te := e.TimelineEntry
+		te.LogSeq, te.LogHead = e.LogSeq, e.LogHead
+		out = append(out, te)
 	}
 	return out, nil
 }
@@ -571,8 +573,7 @@ func (f *files) timelineLocked(tenant wire.ID) []tlRec {
 	return out
 }
 
-// anchor is a timeline entry's apply-log anchor (M-D35). Until wire carries
-// the anchor in TimelineEntry it is kept on disk and visible to tests only.
+// anchor is a timeline entry's apply-log anchor (M-D35), as a test view.
 type anchor struct {
 	proxy   wire.ID
 	version uint64
