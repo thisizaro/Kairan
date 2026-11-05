@@ -21,7 +21,9 @@ var (
 	skipMsg   string
 )
 
-// buildCtl builds the kairanctl binary once. In a checkout that has the
+// buildCtl returns the kairanctl binary: KAIRANCTL_BIN first (make break sets
+// it), then a build from KAIRANCTL_SRC_DIR, then a build by import path.
+// It builds at most once. In a checkout that has the
 // program (main, after the lane merges) it builds the package by import path.
 // Lane Q's worktree is sparse and has no program sources: there the build is
 // pointed at another checkout with KAIRANCTL_SRC_DIR (a module root); with
@@ -29,6 +31,14 @@ var (
 func buildCtl(t testing.TB) string {
 	t.Helper()
 	buildOnce.Do(func() {
+		if b := os.Getenv("KAIRANCTL_BIN"); b != "" {
+			if _, err := os.Stat(b); err != nil {
+				buildErr = "KAIRANCTL_BIN is set but unusable: " + err.Error()
+				return
+			}
+			builtBin = b
+			return
+		}
 		dir, err := os.MkdirTemp("", "kairanctl-break-")
 		if err != nil {
 			buildErr = err.Error()
