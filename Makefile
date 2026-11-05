@@ -5,9 +5,9 @@ SHELL := /usr/bin/env bash
 # Go steps are skipped while the scaffold has no .go files.
 HAVE_GO := $(shell find . -name '*.go' -not -path './.git/*' -print -quit 2>/dev/null)
 
-.PHONY: ci test fuzz-smoke lint vet check-jsonl vulncheck e2e chaos bench demo k3d-demo plan log
+.PHONY: ci test break hooks-test fuzz-smoke lint vet check-jsonl vulncheck e2e chaos bench demo k3d-demo plan log
 
-ci: vet lint test fuzz-smoke check-jsonl vulncheck
+ci: vet lint test fuzz-smoke check-jsonl hooks-test vulncheck
 	@echo "make ci: ok"
 
 vet:
@@ -32,6 +32,16 @@ ifneq ($(HAVE_GO),)
 else
 	@echo "test: no Go files yet, skipped"
 endif
+
+# Break-pass attack tests (M-D17), written by lane Q against exported APIs. Also run by `test`.
+break:
+	@if find test/break -name '*_test.go' -print -quit 2>/dev/null | grep -q .; then \
+	  go test -race -count=1 ./test/break/...; \
+	else echo "break: no break tests yet"; fi
+
+# Guard hooks and pre-commit, driven with synthetic tool calls.
+hooks-test:
+	@scripts/test-hooks.sh
 
 # 5s per Fuzz target; every package with fuzz tests.
 fuzz-smoke:
