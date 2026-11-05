@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"time"
 
 	"kairan/internal/clock"
@@ -34,9 +35,22 @@ import (
 // in <data dir>/highwater (mode 0600). Save writes a temp file in the same
 // directory, fsyncs it, renames it over the old file and fsyncs the
 // directory, so a crash leaves the old or the new value, never a mix. The mark
-// only ever moves forward: in memory, and on disk (an unchanged or lower value
-// is not written). Run saves every HighWaterInterval (60s) and once more when
-// its context ends.
+// only ever moves forward: in memory, and on disk. Before writing, Save re-reads
+// the file under a process-wide lock and keeps the maximum, so a second guard
+// (or a stale one) with a lower mark never lowers a higher file; an unchanged
+// or lower value is not written. Across processes the re-read and the atomic
+// rename narrow the window but do not close it (no file lock; one proxy owns
+// one data directory). Run saves every HighWaterInterval (60s) and once more
+// when its context ends.
+//
+// Hostile or odd file. The file is read only if it is a regular file: it is
+// opened non-blocking without following symlinks and its type is checked on
+// the open descriptor. A FIFO, device, directory or symlink at the path counts
+// as corrupt (ErrHighWaterCorrupt, usable guard) and never blocks; the next
+// Save replaces it. Save clamps the mark to 9999-12-31T23:59:59.999999999Z (it
+// does not return an error), so the file it writes is always one its own loader
+// accepts. EffectiveNow and every guard method return UTC times without a Go
+// monotonic reading, whatever the caller passed in.
 //
 // Untrusted clock. When the wall clock is more than UntrustedMargin (5m)
 // behind effective_now the guard reports wire.ErrClockUntrusted through
@@ -68,6 +82,15 @@ const (
 	hwTempSuffix      = ".tmp"
 )
 
+// maxHighWater is the largest mark Save will write: the last nanosecond that
+// RFC 3339 can print with a four-digit year, which parseHighWater accepts.
+var maxHighWater = time.Date(9999, 12, 31, 23, 59, 59, 999999999, time.UTC)
+
+// fileMu serialises the read-compare-write in Save across every guard in this
+// process. Guards in other processes are covered by the re-read and the atomic
+// rename only (see the package comment).
+var fileMu sync.Mutex
+
 // ErrHighWaterCorrupt means the high-water file exists but is not exactly one
 // canonical UTC timestamp line. OpenClockGuard still returns a usable guard
 // (high-water unknown, so effective_now follows the wall clock); the caller
@@ -97,7 +120,7 @@ func effective(wall time.Time, mono time.Duration, a Anchor, highWater time.Time
 			eff = t
 		}
 	}
-	return eff
+	return strip(eff)
 }
 
 // strip drops the zone and, importantly, Go's monotonic reading: Before, After
@@ -140,7 +163,7 @@ func OpenClockGuard(clk clock.Clock, dir string) (*ClockGuard, error) {
 	b, err := readSmall(g.path)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
-	case errors.Is(err, errTooBig):
+	case errors.Is(err, errTooBig), errors.Is(err, errNotRegular):
 		openErr = ErrHighWaterCorrupt
 	case err != nil:
 		return nil, fmt.Errorf("agent: clock guard: %w", err)
@@ -243,8 +266,22 @@ func (g *ClockGuard) Save() error {
 
 func (g *ClockGuard) saveLocked() (err error) {
 	hw := g.anchor.Wall
+	if hw.After(maxHighWater) {
+		hw = maxHighWater // the loader rejects anything it cannot parse back
+	}
 	if !hw.After(g.saved) {
 		return nil // never move backwards, never rewrite an equal value
+	}
+	// Other guards (another process, a second guard on the same directory)
+	// may have written a higher mark since this one last looked. Compare with
+	// the file as it is now, under a lock, and keep the maximum.
+	fileMu.Lock()
+	defer fileMu.Unlock()
+	if b, rerr := readSmall(g.path); rerr == nil {
+		if cur, perr := parseHighWater(b); perr == nil && !hw.After(cur) {
+			g.saved = cur
+			return nil
+		}
 	}
 	f, err := os.CreateTemp(g.dir, hwTempPrefix+"*"+hwTempSuffix) // mode 0600
 	if err != nil {
@@ -316,12 +353,26 @@ func removeStaleTemps(dir string) {
 
 var errTooBig = errors.New("file too big")
 
+var errNotRegular = errors.New("not a regular file")
+
+// readSmall reads the file at path only if it is a regular file. The open is
+// non-blocking and does not follow a symlink, so a FIFO or device placed at
+// the path cannot hang the proxy at boot; the type is then checked on the open
+// descriptor, which closes the window between a check and the open.
 func readSmall(path string) ([]byte, error) {
-	f, err := os.Open(path)
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0)
 	if err != nil {
+		if errors.Is(err, syscall.ELOOP) {
+			return nil, errNotRegular
+		}
 		return nil, err
 	}
 	defer f.Close()
+	if fi, err := f.Stat(); err != nil {
+		return nil, err
+	} else if !fi.Mode().IsRegular() {
+		return nil, errNotRegular
+	}
 	b, err := io.ReadAll(io.LimitReader(f, maxHighWaterBytes+1))
 	if err != nil {
 		return nil, err
