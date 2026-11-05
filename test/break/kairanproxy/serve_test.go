@@ -94,16 +94,16 @@ func (l *life) files() map[string]string {
 	return out
 }
 
-// policyFile is the one data file that is not the apply log, the decision log or the high-water mark.
+// policyFile is the stored policy, "policy.json" (documented in go doc of the store package). It fails the test
+// when that file is missing, so a tamper test can never act on a different file (a lock file, a log).
 func (l *life) policyFile() string {
 	l.t.Helper()
-	for n, p := range l.files() {
-		if n != "apply.log" && n != "decisions.log" && n != "highwater" && !strings.HasPrefix(n, ".") && !strings.Contains(n, "tmp") {
-			return p
-		}
+	p := filepath.Join(l.dir, "policy.json")
+	st, err := os.Lstat(p)
+	if err != nil || !st.Mode().IsRegular() {
+		l.t.Fatalf("no policy.json in %v: %v", l.files(), err)
 	}
-	l.t.Fatalf("no policy file in %v", l.files())
-	return ""
+	return p
 }
 
 func (l *life) decisions() []string {
