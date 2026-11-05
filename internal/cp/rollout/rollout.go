@@ -48,11 +48,18 @@ type Rollout struct {
 	// there (M-D44). A malformed rollout (wrong tenant, bad version) halts
 	// without it: it never raises a group.
 	Promoted bool
+	// Rejected is set when the rollout was malformed from the start (a bad
+	// request from Start, or a canary-phase rollout that does not match the
+	// fleet's tenant or its previous version). A rejected rollout raised
+	// nothing: every group, the canary group included, stays at Previous
+	// (Q-D7). It is always Halted.
+	Rejected bool
 }
 
 // Start begins a rollout in the Canary phase. A request that cannot be a
 // rollout (invalid, or Version not above previous) comes back already Halted
-// with the reason, so nothing is promoted. A zero dwell in the request means
+// with the reason and Rejected set, so no group is raised, the canary group
+// included (Q-D7). A zero dwell in the request means
 // defaultDwell.
 func Start(req wire.RolloutRequest, previous uint64, now time.Time, defaultDwell time.Duration) Rollout {
 	dwell := defaultDwell
@@ -78,8 +85,10 @@ func Start(req wire.RolloutRequest, previous uint64, now time.Time, defaultDwell
 	}
 	switch {
 	case req.Validate() != nil:
+		r.Rejected = true
 		return halt(r, wire.ErrBadRequest)
 	case req.Version <= previous:
+		r.Rejected = true
 		return halt(r, wire.ErrNotNewer)
 	}
 	return r
@@ -103,11 +112,18 @@ func Start(req wire.RolloutRequest, previous uint64, now time.Time, defaultDwell
 // No group is ever desired less than Previous. Step does not modify its inputs.
 func Step(r Rollout, fleet wire.FleetView, now time.Time) (Rollout, map[wire.ID]uint64) {
 	if r.Phase == wire.PhaseCanary || r.Phase == wire.PhasePromoting {
+		reason := wire.ErrorCode("")
 		switch {
 		case fleet.Tenant != r.Tenant:
-			r = halt(r, wire.ErrWrongTenant)
+			reason = wire.ErrWrongTenant
 		case r.Version == 0 || r.Version <= r.Previous:
-			r = halt(r, wire.ErrNotNewer)
+			reason = wire.ErrNotNewer
+		}
+		if reason != "" {
+			// In Canary nothing legitimate has been raised yet: a rollout for
+			// the wrong tenant must not raise the canary group (Q-D7).
+			r.Rejected = r.Rejected || r.Phase == wire.PhaseCanary
+			r = halt(r, reason)
 		}
 	}
 	switch r.Phase {
@@ -225,10 +241,14 @@ func sortedByID(ps []wire.ProxyView) []wire.ProxyView {
 // the new version at once, other groups only once promoting or complete. A
 // halted rollout keeps what each group had when it halted: Version for all
 // groups if it halted while promoting, else Previous for non-canary groups. Never
-// below Previous. Step uses it for every group; the fleet page uses it to show
+// below Previous. A Rejected rollout raised nothing: every group stays at
+// Previous. Step uses it for every group; the fleet page uses it to show
 // the desired version without stepping the rollout.
 func DesiredFor(r Rollout, group wire.ID) uint64 {
 	canary := max(r.Version, r.Previous)
+	if r.Rejected {
+		return r.Previous
+	}
 	if group == CanaryGroup || r.Phase == wire.PhasePromoting || r.Phase == wire.PhaseComplete ||
 		(r.Phase == wire.PhaseHalted && r.Promoted) {
 		return canary

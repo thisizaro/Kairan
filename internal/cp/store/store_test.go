@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -201,6 +202,13 @@ func TestRolloutRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	check(reopen(t, dir), r1)
+	// Rejected (a malformed rollout that raised nothing) survives a restart (Q-D7).
+	r3 := rollout.Rollout{Tenant: "acme", Version: 9, Previous: 8, Phase: wire.PhaseHalted,
+		Reason: wire.ErrBadRequest, Dwell: time.Minute, Rejected: true}
+	if err := s.PutRollout(r3); err != nil {
+		t.Fatal(err)
+	}
+	check(reopen(t, dir), r3)
 }
 
 func TestPutRolloutInvalid(t *testing.T) {
@@ -686,4 +694,160 @@ func FuzzOpenCorruptFiles(f *testing.F) {
 			t.Fatal("garbage accepted")
 		}
 	})
+}
+
+// Q-D15: a log_seq or log_head regression for the same version and hash starts
+// its own timeline entry, so evidence sees 7 then 5, not 5 overwriting 7.
+func TestTimelineAnchorRegressionStartsEntry(t *testing.T) {
+	type pt struct {
+		seq  uint64
+		head wire.Hash
+	}
+	tests := []struct {
+		name  string
+		steps []pt
+		want  []anchor
+	}{
+		{"seq goes back", []pt{{6, hh('a')}, {7, hh('b')}, {5, hh('c')}},
+			[]anchor{{"p1", 7, 7, hh('b')}, {"p1", 7, 5, hh('c')}}},
+		{"head differs at same seq", []pt{{7, hh('b')}, {7, hh('e')}},
+			[]anchor{{"p1", 7, 7, hh('b')}, {"p1", 7, 7, hh('e')}}},
+		{"forward is one entry, latest anchor", []pt{{5, hh('a')}, {6, hh('b')}, {7, hh('c')}},
+			[]anchor{{"p1", 7, 7, hh('c')}}},
+		{"same anchor repeated is one entry", []pt{{7, hh('b')}, {7, hh('b')}},
+			[]anchor{{"p1", 7, 7, hh('b')}}},
+		{"regression then recovery forward", []pt{{7, hh('b')}, {5, hh('c')}, {6, hh('d')}},
+			[]anchor{{"p1", 7, 7, hh('b')}, {"p1", 7, 6, hh('d')}}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s, dir := open(t)
+			for i, p := range tc.steps {
+				r := report("p1", uint64(i+1), 7)
+				r.LogSeq, r.LogHead = p.seq, p.head
+				if err := s.RecordStatus(fleet.Last{Group: "g", Report: r, SeenAt: t0.Add(time.Duration(i) * time.Second)}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, st := range []Store{s, reopen(t, dir)} {
+				if got := st.(*files).anchors("acme"); !reflect.DeepEqual(got, tc.want) {
+					t.Fatalf("anchors = %+v want %+v", got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+// Q-D8: a state file that is not a regular file (a FIFO, a link to one) is
+// refused at once; OpenFiles must never wait for a writer.
+func TestOpenFilesRefusesNonRegularFiles(t *testing.T) {
+	setup := func(t *testing.T) string {
+		s, dir := open(t)
+		env, meta := mkEnv(`{"policy":"x"}`)
+		if err := s.PutEnvelope(env, meta); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.PutRollout(rollout.Rollout{Tenant: "acme", Version: 8, Phase: wire.PhaseCanary}); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.RecordStatus(fleet.Last{Group: "g", Report: report("p1", 1, 7), SeenAt: t0}); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	read := func(t *testing.T, p string) string {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	for _, tc := range []struct {
+		name string
+		file func(t *testing.T, dir string) string // returns the path to replace
+	}{
+		{"envelope", func(t *testing.T, dir string) string { return firstFile(t, dir, "envelopes") }},
+		{"rollout", func(t *testing.T, dir string) string { return firstFile(t, dir, "rollouts") }},
+		{"fleet", func(t *testing.T, dir string) string { return firstFile(t, dir, "fleet") }},
+	} {
+		for _, kind := range []string{"fifo", "symlink"} {
+			t.Run(tc.name+" "+kind, func(t *testing.T) {
+				dir := setup(t)
+				p := tc.file(t, dir)
+				good := read(t, p)
+				if err := os.Remove(p); err != nil {
+					t.Fatal(err)
+				}
+				if kind == "fifo" {
+					if err := syscall.Mkfifo(p, 0o600); err != nil {
+						t.Skipf("mkfifo: %v", err)
+					}
+				} else {
+					target := filepath.Join(t.TempDir(), "real.json")
+					if err := os.WriteFile(target, []byte(good), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Symlink(target, p); err != nil {
+						t.Fatal(err)
+					}
+				}
+				done := make(chan error, 1)
+				go func() {
+					_, err := OpenFiles(dir)
+					done <- err
+				}()
+				select {
+				case err := <-done:
+					if !errors.Is(err, ErrCorrupt) {
+						t.Fatalf("err = %v, want ErrCorrupt", err)
+					}
+					if !strings.Contains(err.Error(), filepath.Base(p)) {
+						t.Fatalf("error should name the file: %v", err)
+					}
+				case <-time.After(5 * time.Second):
+					t.Fatal("OpenFiles blocked on a non-regular file")
+				}
+			})
+		}
+	}
+}
+
+func firstFile(t *testing.T, dir, kind string) string {
+	t.Helper()
+	var found string
+	_ = filepath.WalkDir(filepath.Join(dir, kind), func(p string, d os.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && found == "" {
+			found = p
+		}
+		return nil
+	})
+	if found == "" {
+		t.Fatalf("no file under %s", kind)
+	}
+	return found
+}
+
+// Q-D8: the same holds for a state directory replaced by a FIFO.
+func TestOpenFilesRefusesFifoDirectory(t *testing.T) {
+	for _, name := range []string{"envelopes", "rollouts", "fleet"} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := syscall.Mkfifo(filepath.Join(dir, name), 0o600); err != nil {
+				t.Skipf("mkfifo: %v", err)
+			}
+			done := make(chan error, 1)
+			go func() {
+				_, err := OpenFiles(dir)
+				done <- err
+			}()
+			select {
+			case err := <-done:
+				if !errors.Is(err, ErrCorrupt) || !strings.Contains(err.Error(), name) {
+					t.Fatalf("err = %v, want ErrCorrupt naming %s", err, name)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("OpenFiles blocked on a FIFO directory")
+			}
+		})
+	}
 }

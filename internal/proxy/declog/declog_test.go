@@ -163,7 +163,7 @@ func TestOpenRefusesSymlink(t *testing.T) {
 	}
 	link := filepath.Join(dir, "decisions.log")
 	if err := os.Symlink(target, link); err != nil {
-		t.Skip(err)
+		t.Fatalf("symlink: %v", err)
 	}
 	if l, err := declog.Open(link, declog.Options{}); err == nil {
 		l.Close()

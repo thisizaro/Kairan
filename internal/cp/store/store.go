@@ -13,6 +13,14 @@
 // file or the new one). Temp files left by a crash are ignored and removed on
 // open. A file that does not decode strictly, or does not match its own name,
 // fails OpenFiles with ErrCorrupt: the store never starts silently empty.
+// Only regular files are state: a FIFO, a link or any other file type where a
+// state file or directory belongs is ErrCorrupt too, and OpenFiles never
+// waits on one (it opens without blocking and checks the open file).
+//
+// A proxy's timeline gets a new entry when the version or hash changes, and
+// also when its apply-log anchor goes backwards: a lower log_seq, or the same
+// log_seq with another log_head. A regression is its own period, so the
+// higher anchor stays on record and evidence sees it before the lower one.
 //
 // Only metadata is stored (I4): the signed envelopes an admin published, and
 // the fields of a StatusReport. Nothing is read from a proxy's call data.

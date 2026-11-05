@@ -55,9 +55,14 @@ const (
 )
 
 // Enrollment is what the control plane knows about one proxy ID.
+//
+// The proxy's token is given either as Token or, so that a config file holds
+// no secret, as TokenDigest (the SHA-256 of the token). Token wins when both
+// are set. An enrollment with neither can never authenticate.
 type Enrollment struct {
 	Tenant, Group wire.ID
 	Token         string
+	TokenDigest   [sha256.Size]byte
 }
 
 // Config is the control plane's API configuration.
@@ -71,6 +76,9 @@ type Config struct {
 	Thresholds   fleet.Thresholds
 	TickInterval time.Duration // rollout timer period for Run; default DefaultTickInterval
 }
+
+// emptyDigest is the SHA-256 of the empty token, which must never match.
+var emptyDigest = sha256.Sum256(nil)
 
 type enrolled struct {
 	Enrollment
@@ -156,14 +164,28 @@ func New(cfg Config, st store.Store, clk clock.Clock, log *slog.Logger, m *obs.R
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 	for _, id := range ids {
 		e := cfg.Proxies[id]
-		if !id.Valid() || !e.Tenant.Valid() || !e.Group.Valid() || e.Token == "" {
+		d := e.TokenDigest
+		if e.Token != "" {
+			d = sha256.Sum256([]byte(e.Token))
+		}
+		if !id.Valid() || !e.Tenant.Valid() || !e.Group.Valid() || d == ([sha256.Size]byte{}) || d == emptyDigest {
 			log.Warn("enrollment skipped", obs.Proxy(id))
 			continue
 		}
-		d := sha256.Sum256([]byte(e.Token))
 		s.proxies[id] = enrolled{Enrollment: e, digest: d}
 		s.byDigest[d] = append(s.byDigest[d], id)
 		s.tenants[e.Tenant] = true
+	}
+	enr := m.Gauge("kairan_cp_enrolled_proxies", "Proxies enrolled, by tenant (from the config).", "tenant")
+	count := map[wire.ID]int{}
+	for t := range s.tenants {
+		count[t] = 0
+	}
+	for _, e := range s.proxies {
+		count[e.Tenant]++
+	}
+	for t, n := range count {
+		enr.With(t).Set(float64(n))
 	}
 	s.page = web.Handler(st, clk, cfg.Thresholds)
 	s.polls = m.Counter("kairan_cp_polls_total", "Long-poll requests answered, by result.", "result")

@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -973,4 +975,42 @@ func TestConcurrentTraffic(t *testing.T) {
 		t.Fatal("deadlock")
 	}
 	e.waitActive(0)
+}
+
+// An enrollment may carry the SHA-256 of the token instead of the token, so a
+// config file holds no secret (C-07). It authenticates exactly like the token.
+func TestEnrollmentByTokenDigest(t *testing.T) {
+	e := newEnv(t, func(c *Config) {
+		c.Proxies["p-digest"] = Enrollment{Tenant: tenant, Group: "main", TokenDigest: sha256.Sum256([]byte("digest-token-of-p-digest"))}
+		c.Proxies["p-nothing"] = Enrollment{Tenant: tenant, Group: "main"} // neither: never authenticates
+	})
+	// A status report returns at once (a poll would be held on the fake clock).
+	rep := mustJSON(t, wire.StatusReport{Tenant: tenant, ProxyID: "p-digest", State: wire.StateDenyAll})
+	if rec := e.do("POST", wire.PathStatus, "digest-token-of-p-digest", rep); rec.Code != http.StatusNoContent {
+		t.Fatalf("digest enrollment refused its own token: %d %s", rec.Code, rec.Body)
+	}
+	wantErr(t, e.do("GET", pollTarget(tenant, "p-digest", 0), "other-token", nil), http.StatusUnauthorized, wire.ErrUnauthorized)
+	// The digest in hex is not a token.
+	hexd := sha256.Sum256([]byte("digest-token-of-p-digest"))
+	wantErr(t, e.do("GET", pollTarget(tenant, "p-digest", 0), hex.EncodeToString(hexd[:]), nil), http.StatusUnauthorized, wire.ErrUnauthorized)
+	wantErr(t, e.do("GET", pollTarget(tenant, "p-nothing", 0), "", nil), http.StatusUnauthorized, wire.ErrUnauthorized)
+}
+
+// The enrolled count per tenant is a metric, 0 for a tenant without proxies.
+func TestEnrolledProxiesMetric(t *testing.T) {
+	e := newEnv(t, func(c *Config) {
+		c.AdminKeys["empty-tenant"] = trust.Root{Tenant: "empty-tenant"}
+	})
+	rec := httptest.NewRecorder()
+	e.reg.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/metrics", nil))
+	out := rec.Body.String()
+	for _, want := range []string{
+		`kairan_cp_enrolled_proxies{tenant="empty-tenant"} 0`,
+		fmt.Sprintf(`kairan_cp_enrolled_proxies{tenant=%q} 3`, tenant),
+		`kairan_cp_enrolled_proxies{tenant="beta"} 1`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("metrics lack %q:\n%s", want, out)
+		}
+	}
 }
