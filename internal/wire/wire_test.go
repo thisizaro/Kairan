@@ -51,7 +51,8 @@ func TestGoldenJSON(t *testing.T) {
 		}}}, `{"tenant":"bank-a","proxies":[{"proxy_id":"bank-a-p1","group":"canary","health":"stale","state":"enforcing","desired_version":8,"applied_version":7,"policy_hash":"` + hashA + `","drift":1,"last_seen_unix_ms":1000}]}`},
 		{"TimelineView", TimelineView{Tenant: "bank-a", Entries: []TimelineEntry{{
 			ProxyID: "bank-a-p1", Version: 7, PolicyHash: hashA, FirstSeenUnixMs: 1, LastSeenUnixMs: 2,
-		}}}, `{"tenant":"bank-a","entries":[{"proxy_id":"bank-a-p1","version":7,"policy_hash":"` + hashA + `","first_seen_unix_ms":1,"last_seen_unix_ms":2}]}`},
+			LogSeq: 3, LogHead: hashA,
+		}}}, `{"tenant":"bank-a","entries":[{"proxy_id":"bank-a-p1","version":7,"policy_hash":"` + hashA + `","first_seen_unix_ms":1,"last_seen_unix_ms":2,"log_seq":3,"log_head":"` + hashA + `"}]}`},
 		{"ErrorResponse", ErrorResponse{Code: ErrUnauthorized}, `{"code":"unauthorized"}`},
 		{"ApplyError/clock_untrusted", ApplyError{Code: ErrClockUntrusted}, `{"code":"clock_untrusted"}`},
 	}
