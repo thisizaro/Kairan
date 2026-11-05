@@ -41,6 +41,8 @@ func loadTrusted(spec string) (*trustedSet, *cliError) {
 		if !isHexKey(item) {
 			b, err := readBounded(item, 1024)
 			switch {
+			case errors.Is(err, errNotRegular):
+				return bad("a -trusted file is not a regular file", "-trusted のファイルが通常のファイルではありません")
 			case errors.Is(err, errTooBig):
 				return bad("a -trusted file is not a public key file", "-trusted のファイルが公開鍵ファイルではありません")
 			case err != nil:

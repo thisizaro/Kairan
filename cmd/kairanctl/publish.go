@@ -52,9 +52,14 @@ func cmdPublish(args []string, s streams) error {
 	if cerr != nil {
 		return cerr
 	}
-	if len(env.Signatures) < 2 {
-		return fail("the envelope has fewer than two signatures; proxies need two different admins (run: kairanctl approve)",
-			"署名が2つ未満です。プロキシは別々の管理者2名の署名を必要とします (kairanctl approve を実行してください)")
+	// Count distinct key IDs, not entries: one admin repeated is still one.
+	ids := map[wire.Hash]bool{}
+	for _, sg := range env.Signatures {
+		ids[sg.KeyID] = true
+	}
+	if len(ids) < 2 {
+		return fail("the envelope has fewer than two different signing keys; proxies need two different admins (run: kairanctl approve)",
+			"異なる署名鍵が2つ未満です。プロキシは別々の管理者2名の署名を必要とします (kairanctl approve を実行してください)")
 	}
 	cl, err := cf.open(s)
 	if err != nil {
