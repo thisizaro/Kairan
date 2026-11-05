@@ -450,6 +450,25 @@ func TestDesiredCoversEveryGroupInView(t *testing.T) {
 	}
 }
 
+// DesiredFor is the single rule the fleet page and Step both use (C-06).
+func TestDesiredForMatchesStep(t *testing.T) {
+	view := fleetOf(px{id: "c1", group: CanaryGroup}, px{id: "m1", group: "main"})
+	for _, phase := range []wire.RolloutPhase{wire.PhaseCanary, wire.PhasePromoting, wire.PhaseHalted, wire.PhaseComplete} {
+		r := rollout(phase)
+		// Compare with desired() directly: Step may advance the phase first.
+		want := desired(r, view)
+		for _, g := range []wire.ID{CanaryGroup, "main"} {
+			if got := DesiredFor(r, g); got != want[g] {
+				t.Errorf("%s/%s: DesiredFor = %d, desired = %d", phase, g, got, want[g])
+			}
+		}
+	}
+	r := rollout(wire.PhaseHalted)
+	if DesiredFor(r, CanaryGroup) != ver || DesiredFor(r, "main") != prevVer {
+		t.Errorf("halted: canary stays at the new version, others at previous")
+	}
+}
+
 func TestStepDoesNotMutateFleet(t *testing.T) {
 	e := &wire.ApplyError{Code: wire.ErrExpired, Version: ver}
 	f := fleetOf(px{id: "c1", group: CanaryGroup, applied: ver, err: e}, px{id: "m1", group: "main", applied: prevVer})

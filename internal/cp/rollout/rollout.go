@@ -212,20 +212,23 @@ func sortedByID(ps []wire.ProxyView) []wire.ProxyView {
 	return out
 }
 
-// desired computes the version each group in the view should run. Never below Previous.
-func desired(r Rollout, fleet wire.FleetView) map[wire.ID]uint64 {
+// DesiredFor is the version a group should run under r: the canary group gets
+// the new version at once, other groups only once promoting or complete. Never
+// below Previous. Step uses it for every group; the fleet page uses it to show
+// the desired version without stepping the rollout.
+func DesiredFor(r Rollout, group wire.ID) uint64 {
 	canary := max(r.Version, r.Previous)
-	main := r.Previous
-	if r.Phase == wire.PhasePromoting || r.Phase == wire.PhaseComplete {
-		main = canary
+	if group == CanaryGroup || r.Phase == wire.PhasePromoting || r.Phase == wire.PhaseComplete {
+		return canary
 	}
+	return r.Previous
+}
+
+// desired computes the version each group in the view should run.
+func desired(r Rollout, fleet wire.FleetView) map[wire.ID]uint64 {
 	out := make(map[wire.ID]uint64)
 	for _, p := range fleet.Proxies {
-		if p.Group == CanaryGroup {
-			out[p.Group] = canary
-		} else {
-			out[p.Group] = main
-		}
+		out[p.Group] = DesiredFor(r, p.Group)
 	}
 	return out
 }
