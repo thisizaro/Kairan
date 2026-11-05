@@ -79,6 +79,31 @@ func TestParseConfigValid(t *testing.T) {
 	}
 }
 
+func TestParseConfigMetricsListen(t *testing.T) {
+	c, err := ParseConfig([]byte(goodConfig(nil)))
+	if err != nil || c.MetricsListen != "" {
+		t.Fatalf("default: %q %v", c.MetricsListen, err)
+	}
+	c, err = ParseConfig([]byte(goodConfig(map[string]string{"metrics_listen": `"10.0.0.5:9100"`})))
+	if err != nil || c.MetricsListen != "10.0.0.5:9100" {
+		t.Fatalf("metrics_listen = %q %v", c.MetricsListen, err)
+	}
+	for name, v := range map[string]string{
+		"no port":        `"10.0.0.5"`,
+		"bad port":       `"10.0.0.5:99999"`,
+		"empty":          `""`,
+		"same as listen": `"127.0.0.1:8081"`,
+		"number":         `9100`,
+	} {
+		if c, err := ParseConfig([]byte(goodConfig(map[string]string{"metrics_listen": v}))); err == nil || !strings.Contains(err.Error(), "metrics_listen") && !strings.Contains(err.Error(), "config") {
+			t.Errorf("%s: accepted %+v / %v", name, c, err)
+		}
+	}
+	if _, err := ParseConfig([]byte(goodConfig(map[string]string{"metrics_listen": `"10.0.0.5:9100"`, "Metrics_Listen": `"x"`}))); err == nil {
+		t.Error("case-variant key accepted")
+	}
+}
+
 func TestParseConfigDefaults(t *testing.T) {
 	c, err := ParseConfig([]byte(goodConfig(map[string]string{"skew": "-", "safe_mode": "-", "ca_file": "-", "allow_plaintext": "-"})))
 	if err != nil {

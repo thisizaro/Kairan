@@ -53,6 +53,8 @@ func TestGoldenJSON(t *testing.T) {
 			ProxyID: "bank-a-p1", Version: 7, PolicyHash: hashA, FirstSeenUnixMs: 1, LastSeenUnixMs: 2,
 			LogSeq: 3, LogHead: hashA,
 		}}}, `{"tenant":"bank-a","entries":[{"proxy_id":"bank-a-p1","version":7,"policy_hash":"` + hashA + `","first_seen_unix_ms":1,"last_seen_unix_ms":2,"log_seq":3,"log_head":"` + hashA + `"}]}`},
+		{"TimelineView/dropped", TimelineView{Tenant: "bank-a", Entries: []TimelineEntry{}, Dropped: map[ID]uint64{"bank-a-p1": 4}},
+			`{"tenant":"bank-a","entries":[],"dropped":{"bank-a-p1":4}}`},
 		{"ErrorResponse", ErrorResponse{Code: ErrUnauthorized}, `{"code":"unauthorized"}`},
 		{"ApplyError/clock_untrusted", ApplyError{Code: ErrClockUntrusted}, `{"code":"clock_untrusted"}`},
 	}

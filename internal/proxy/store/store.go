@@ -7,6 +7,22 @@
 // fsyncs the directory, so a crash leaves either the old file or the new one,
 // never a mix.
 //
+// # Temp files (Q-D22)
+//
+// Save writes to a file named ".policy-<digits>.tmp" in the store directory:
+// the fixed prefix ".policy-", a random decimal string chosen by
+// os.CreateTemp, and the fixed suffix ".tmp". A crash between create and
+// rename can leave such a file behind. A leftover is never loaded: Load only
+// reads "policy.json".
+//
+// Open removes every directory entry whose name starts with ".policy-" and
+// ends with ".tmp" (whatever is in between), using os.Remove. It removes
+// nothing else: not "policy.json", not other files. An entry that is already
+// gone is fine. If a removal fails (for example a non-empty directory with
+// such a name, or no permission), Open returns that error and the proxy does
+// not start from this directory. Save also removes its own temp file on any
+// error, so a failed Save leaves none.
+//
 // Load is strict. A file that is missing is "not found". A file that exists
 // but is not exactly one well-formed envelope (garbage, trailing data,
 // unknown fields, too large, wrong shape, not a regular file) is ErrCorrupt.

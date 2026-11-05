@@ -473,7 +473,7 @@ const CanaryGroup wire.ID = "canary"
 
 ### `internal/cp/store` · lane C
 - **Responsibility:** JSON-file storage: envelopes, rollouts, last status per proxy, timeline.
-- **Must uphold:** Atomic writes (temp, fsync, rename). Never stores payload beyond the signed envelope. Safe for concurrent use. The timeline keeps each report's `log_seq` and `log_head` (M-D35).
+- **Must uphold:** Atomic writes (temp, fsync, rename). Never stores payload beyond the signed envelope. Safe for concurrent use. The timeline keeps each report's `log_seq` and `log_head` (M-D35); a backwards anchor starts a new entry (M-D48); at most 256 entries per proxy, oldest dropped and counted in `TimelineView.Dropped` and `kairan_cp_timeline_dropped_total` (M-D55, M-D56).
 ```go
 type Store interface {
     PutEnvelope(env wire.Envelope, m EnvelopeMeta) error   // EnvelopeMeta{Tenant, Version, Hash} filled from trust.Verified by cp/api (M-D41); conflict if the version exists
@@ -625,6 +625,7 @@ func (a *Agent) Run(ctx context.Context) error    // poll + status loops until c
 
 ### `cmd/kairan-cp` · lane C
 - **Responsibility:** Thin main: flags `-config cp.json`, `-admin-token-file FILE` (or `KCP_ADMIN_TOKEN_FILE` / `KCP_ADMIN_TOKEN`; never a flag value) and `-check`; `cp.json` holds `listen`, `data_dir`, metrics listener, TLS or `allow_plaintext`, admin keys and threshold, proxy enrollments as `token_sha256` (C-D9, M-D54); wiring; graceful shutdown on SIGTERM/SIGINT.
+- **`cp.json` schema (M-D61, Q-D26):** strict JSON, unknown, duplicate and case-variant keys rejected. Top level: `listen` (host:port), `data_dir`, `metrics_listen` (optional; warning when not loopback), `tls_cert_file` + `tls_key_file` (TLS 1.2 minimum) or `allow_plaintext: true` (loud warning), `log_level`, `canary_dwell_seconds`, `tenants` `{<tenant id>: {threshold, admin_keys: [hex ed25519 public keys]}}` (threshold >= 2 and <= number of keys), `enrollments` `[{proxy_id, tenant, group, token_sha256}]`. No private key material anywhere (C-D10). Every message for a person, warnings included, is in English and Japanese.
 - **Must uphold:** No logic.
 
 ### `cmd/kairan-proxy` · lane P

@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -70,6 +71,7 @@ type proxyFile struct {
 	Report   wire.StatusReport `json:"report"`
 	SeenAt   time.Time         `json:"seen_at"`
 	Timeline []tlRec           `json:"timeline"`
+	Dropped  uint64            `json:"dropped,omitempty"` // earlier timeline entries cut by the cap (Q-D21)
 }
 
 // ---- in-memory state ----
@@ -77,6 +79,7 @@ type proxyFile struct {
 type proxyRec struct {
 	last    fleet.Last
 	tl      []tlRec
+	dropped uint64
 	flushed time.Time // SeenAt of the last report written to disk
 }
 
@@ -90,6 +93,8 @@ type files struct {
 	root string
 	mu   sync.RWMutex
 	ten  map[wire.ID]*tenantState
+
+	onDrop func(tenant wire.ID, n int)
 }
 
 // OpenFiles opens (creating if needed) the state directory dir and loads all
@@ -294,9 +299,14 @@ func (f *files) loadFleet() error {
 				return corrupt(rel)
 			}
 			rec.SeenAt = rec.SeenAt.UTC()
+			if over := len(rec.Timeline) - MaxTimeline; over > 0 {
+				rec.Timeline = slices.Clone(rec.Timeline[over:])
+				rec.Dropped += uint64(over)
+			}
 			f.tenant(tn).proxies[px] = &proxyRec{
 				last:    fleet.Last{Group: rec.Group, Report: rec.Report, SeenAt: rec.SeenAt},
 				tl:      rec.Timeline,
+				dropped: rec.Dropped,
 				flushed: rec.SeenAt,
 			}
 		}
@@ -495,18 +505,24 @@ func (f *files) RecordStatus(l fleet.Last) error {
 
 	var tl []tlRec
 	var flushed time.Time
+	var dropped uint64
 	important := prev == nil
 	if prev != nil {
-		tl, flushed = prev.tl, prev.flushed
+		tl, flushed, dropped = prev.tl, prev.flushed, prev.dropped
 		important = importantChange(prev.last, l)
 	}
 	tl, grew := extendTimeline(tl, l)
+	cut := 0
 	if grew {
 		important = true
+		if cut = len(tl) - MaxTimeline; cut > 0 {
+			tl = slices.Clone(tl[cut:])
+			dropped += uint64(cut)
+		}
 	}
 	flush := important || l.SeenAt.Before(flushed) || l.SeenAt.Sub(flushed) >= heartbeatFlush
 	if flush {
-		b, err := json.Marshal(proxyFile{Group: l.Group, Report: l.Report, SeenAt: l.SeenAt, Timeline: tl})
+		b, err := json.Marshal(proxyFile{Group: l.Group, Report: l.Report, SeenAt: l.SeenAt, Timeline: tl, Dropped: dropped})
 		if err != nil {
 			return fmt.Errorf("store: encode status: %w", err)
 		}
@@ -519,8 +535,33 @@ func (f *files) RecordStatus(l fleet.Last) error {
 		}
 		flushed = l.SeenAt
 	}
-	t.proxies[px] = &proxyRec{last: l, tl: tl, flushed: flushed}
+	t.proxies[px] = &proxyRec{last: l, tl: tl, dropped: dropped, flushed: flushed}
+	if cut > 0 && f.onDrop != nil {
+		f.onDrop(tn, cut)
+	}
 	return nil
+}
+
+// OnTimelineDrop implements DropNotifier.
+func (f *files) OnTimelineDrop(fn func(tenant wire.ID, n int)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.onDrop = fn
+}
+
+// TimelineDropped implements DropReporter.
+func (f *files) TimelineDropped(tenant wire.ID) (map[wire.ID]uint64, error) {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	out := map[wire.ID]uint64{}
+	if t := f.ten[tenant]; t != nil {
+		for id, p := range t.proxies {
+			if p.dropped > 0 {
+				out[id] = p.dropped
+			}
+		}
+	}
+	return out, nil
 }
 
 // importantChange is true when a report differs from the last one in more

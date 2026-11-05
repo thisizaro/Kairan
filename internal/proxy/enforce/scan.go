@@ -23,8 +23,11 @@ import (
 //     "Method", "method" and look-alikes that Go's case-folding key
 //     matching (or another parser's) would read as "method". Duplicate keys
 //     are an error, so "first wins" and "last wins" parsers cannot disagree;
-//   - the method is matched exactly. A method that is only a case or padding
-//     variant of tools/call or tools/list is an error, not a pass-through.
+//   - the method must match ^[A-Za-z0-9_./-]{1,128}$ byte for byte (Q-D17,
+//     Q-D18): control characters, any non-ASCII byte (zero-width, BOM, bidi)
+//     and over-long names are errors. It is then matched exactly: a method that
+//     is only a case variant of tools/call or tools/list is an error, not a
+//     pass-through.
 //
 // Keys inside "arguments" (and inside params of any other method) are not
 // inspected: they are the tool's business, and the proxy forwards them
@@ -151,6 +154,13 @@ func scanRequest(body []byte) (envelope, error) {
 		return env, errMethod
 	}
 
+	// Q-D17/Q-D18 (M-D55): a method outside ^[A-Za-z0-9_./-]{1,128}$ is
+	// rejected, whatever it is padded with, so a control or invisible
+	// character can never turn tools/call into "some other method".
+	if !validMethod(method) {
+		return env, errMethod
+	}
+
 	switch method {
 	case "tools/call":
 		env.Kind = kindCall
@@ -211,6 +221,23 @@ func scanRequest(body []byte) (envelope, error) {
 		env.Tool = name
 	}
 	return env, nil
+}
+
+// maxMethodLen is the longest method the proxy accepts.
+const maxMethodLen = 128
+
+// validMethod reports whether m matches ^[A-Za-z0-9_./-]{1,128}$, byte by byte.
+func validMethod(m string) bool {
+	if len(m) == 0 || len(m) > maxMethodLen {
+		return false
+	}
+	for i := 0; i < len(m); i++ {
+		c := m[i]
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '.' || c == '/' || c == '-') {
+			return false
+		}
+	}
+	return true
 }
 
 // isNear reports whether method is tools/call or tools/list (target) in a
