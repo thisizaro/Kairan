@@ -9,13 +9,38 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"kairan/internal/wire"
 )
 
-// readBounded reads a whole file of at most limit bytes.
+var errNotRegular = errors.New("not a regular file")
+
+// openRegular opens path for reading and returns it only if the opened file
+// itself is a regular file. The open is non-blocking, so a FIFO (or a link to
+// one, or one swapped in after any earlier check) is opened at once and then
+// refused instead of waiting for a writer. The check is made on the open
+// descriptor, so there is no gap to race.
+func openRegular(path string) (*os.File, os.FileInfo, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, nil, err
+	}
+	st, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, nil, err
+	}
+	if !st.Mode().IsRegular() {
+		f.Close()
+		return nil, nil, errNotRegular
+	}
+	return f, st, nil
+}
+
+// readBounded reads a whole regular file of at most limit bytes.
 func readBounded(path string, limit int) ([]byte, error) {
-	f, err := os.Open(path)
+	f, _, err := openRegular(path)
 	if err != nil {
 		return nil, err
 	}
@@ -36,6 +61,8 @@ var errTooBig = errors.New("file too large")
 func readInput(path string) ([]byte, *cliError) {
 	b, err := readBounded(path, wire.MaxEnvelopeBytes)
 	switch {
+	case errors.Is(err, errNotRegular):
+		return nil, fail("input file is not a regular file", "入力ファイルが通常のファイルではありません")
 	case errors.Is(err, errTooBig):
 		return nil, fail("input file is larger than the 256 KiB limit", "入力ファイルが上限 (256 KiB) を超えています")
 	case err != nil:
@@ -104,18 +131,14 @@ func replaceFile(path string, data []byte) error {
 // keygen). Like ssh, it refuses a file that other users can read or write.
 // Errors say what is wrong with the file and never include its content.
 func loadKey(path string) (ed25519.PrivateKey, *cliError) {
-	f, err := os.Open(path)
+	f, st, err := openRegular(path)
+	if errors.Is(err, errNotRegular) {
+		return nil, fail("key file is not a regular file", "鍵ファイルが通常のファイルではありません")
+	}
 	if err != nil {
 		return nil, fail("cannot open key file: "+reason(err), "鍵ファイルを開けません: "+reasonJa(err))
 	}
 	defer f.Close()
-	st, err := f.Stat()
-	if err != nil {
-		return nil, fail("cannot read key file: "+reason(err), "鍵ファイルを読めません: "+reasonJa(err))
-	}
-	if !st.Mode().IsRegular() {
-		return nil, fail("key file is not a regular file", "鍵ファイルが通常のファイルではありません")
-	}
 	if st.Mode().Perm()&0o077 != 0 {
 		return nil, fail("key file permissions are too open; run: chmod 600 <key file>",
 			"鍵ファイルの権限が緩すぎます。chmod 600 <鍵ファイル> を実行してください")
