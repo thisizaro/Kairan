@@ -1,0 +1,3 @@
+# Parallel lanes append lines; union merge keeps both sides, no conflicts.
+docs/*.jsonl merge=union
+* text=auto eol=lf
