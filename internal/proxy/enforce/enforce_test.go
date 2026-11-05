@@ -1043,14 +1043,15 @@ func TestConfigValidate(t *testing.T) {
 		t.Fatal(err)
 	}
 	bad := map[string]Config{
-		"no upstream":   {APIKeys: ok.APIKeys},
-		"ftp upstream":  {Upstream: &url.URL{Scheme: "ftp", Host: "x"}, APIKeys: ok.APIKeys},
-		"no host":       {Upstream: &url.URL{Scheme: "http"}, APIKeys: ok.APIKeys},
-		"no keys":       {Upstream: u},
-		"empty key":     {Upstream: u, APIKeys: map[string]string{"": "r"}},
-		"empty role":    {Upstream: u, APIKeys: map[string]string{"k": ""}},
-		"bad safe mode": {Upstream: u, APIKeys: ok.APIKeys, SafeMode: "wide_open"},
-		"neg timeout":   {Upstream: u, APIKeys: ok.APIKeys, UpstreamTimeout: -1},
+		"no upstream":    {APIKeys: ok.APIKeys},
+		"ftp upstream":   {Upstream: &url.URL{Scheme: "ftp", Host: "x"}, APIKeys: ok.APIKeys},
+		"no host":        {Upstream: &url.URL{Scheme: "http"}, APIKeys: ok.APIKeys},
+		"no keys":        {Upstream: u},
+		"empty key":      {Upstream: u, APIKeys: map[string]string{"": "r"}},
+		"empty role":     {Upstream: u, APIKeys: map[string]string{"k": ""}},
+		"role not an ID": {Upstream: u, APIKeys: map[string]string{"k": "Reader"}},
+		"bad safe mode":  {Upstream: u, APIKeys: ok.APIKeys, SafeMode: "wide_open"},
+		"neg timeout":    {Upstream: u, APIKeys: ok.APIKeys, UpstreamTimeout: -1},
 	}
 	for name, c := range bad {
 		if c.Validate() == nil {

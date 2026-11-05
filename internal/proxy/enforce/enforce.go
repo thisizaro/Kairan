@@ -80,8 +80,8 @@ func (c Config) Validate() error {
 		return errors.New("enforce: no API keys configured")
 	}
 	for k, r := range c.APIKeys {
-		if k == "" || r == "" {
-			return errors.New("enforce: API key and role must not be empty")
+		if k == "" || !wire.ID(r).Valid() {
+			return errors.New("enforce: API key must not be empty and a role must be an ID (1-63 of a-z, 0-9, -)")
 		}
 	}
 	if _, err := state.ParseSafeMode(string(c.SafeMode)); err != nil {
