@@ -14,3 +14,4 @@ bench/*.tmp
 *.pem
 *.key
 !test/fixtures/TEST-ONLY-*
+.break-bin/
