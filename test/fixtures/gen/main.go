@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"kairan/internal/wire"
@@ -79,6 +80,16 @@ func mustJSON(v any) []byte {
 		panic(err)
 	}
 	return b
+}
+
+// edit replaces old with new in payload exactly once; it panics otherwise so a
+// change to the canonical encoding cannot silently produce a wrong vector.
+func edit(payload []byte, old, new string) []byte {
+	s := string(payload)
+	if strings.Count(s, old) != 1 {
+		panic(fmt.Sprintf("gen: %q appears %d times in %s", old, strings.Count(s, old), s))
+	}
+	return []byte(strings.Replace(s, old, new, 1))
 }
 
 func sign(payloadType string, payload []byte, signers ...string) wire.Envelope {
@@ -145,6 +156,29 @@ func build() (map[string][]byte, Manifest) {
 	badDefault := policy("bank-a", 2, issued, 72*time.Hour)
 	badDefault.Default = "allow"
 
+	// G0 cases (M-D34). Each is v2 for bank-a, unexpired, offered to a proxy
+	// on v1, so it trips only its own check.
+	dupRole := edit(v2, `"sales":{"crm.read_*":"R","crm.update_deal":"W"}}`,
+		`"sales":{"crm.read_*":"R","crm.update_deal":"W"},"sales":{"crm.*":"X"}}`)
+	dupTool := edit(v2, `"crm.read_*":"R","crm.update_deal":"W"`,
+		`"crm.read_*":"R","crm.update_deal":"W","crm.read_*":"X"`)
+	caseVariant := edit(v2, `{"tenant":`, `{"Tenant":`)
+	trailing := append(append([]byte{}, v2...), []byte(` {"version":99}`)...)
+	inverted := policy("bank-a", 2, Now.Add(48*time.Hour), 72*time.Hour)
+	inverted.ExpiresAt = Now.Add(24 * time.Hour).UTC().Format(time.RFC3339)
+
+	rawSig := wire.Envelope{PayloadType: pt, Payload: v2, Signatures: []wire.Signature{}}
+	for _, n := range []string{"admin-a", "admin-b"} {
+		k := key(n)
+		rawSig.Signatures = append(rawSig.Signatures, wire.Signature{
+			KeyID: keyID(k.Public().(ed25519.PublicKey)),
+			Sig:   ed25519.Sign(k, v2), // no PAE
+		})
+	}
+
+	mislabeled := sign(pt, v2, "admin-a", "admin-b")
+	mislabeled.Signatures[1].KeyID = keyID(key("admin-c").Public().(ed25519.PublicKey))
+
 	envs := []struct {
 		c   Case
 		env wire.Envelope
@@ -165,6 +199,14 @@ func build() (map[string][]byte, Manifest) {
 		{Case{Name: "same-version", Have: 2, Want: wire.ErrNotNewer, Why: "v2 offered to a proxy already on v2"}, sign(pt, v2, "admin-a", "admin-b")},
 		{Case{Name: "expired", Have: 1, Want: wire.ErrExpired, Why: "expired a day before Now"}, sign(pt, mustJSON(policy("bank-a", 2, Now.Add(-96*time.Hour), 72*time.Hour)), "admin-a", "admin-b")},
 		{Case{Name: "expired-within-skew", Have: 1, Want: "", Why: "expired 1 minute before Now; skew is 2 minutes"}, sign(pt, mustJSON(policy("bank-a", 2, Now.Add(-72*time.Hour-time.Minute), 72*time.Hour)), "admin-a", "admin-b")},
+		{Case{Name: "duplicate-role", Have: 1, Want: wire.ErrMalformed, Why: `validly signed, but role "sales" appears twice (the second grants crm.* X)`}, sign(pt, dupRole, "admin-a", "admin-b")},
+		{Case{Name: "duplicate-tool", Have: 1, Want: wire.ErrMalformed, Why: `validly signed, but tool "crm.read_*" appears twice in role sales (R, then X)`}, sign(pt, dupTool, "admin-a", "admin-b")},
+		{Case{Name: "case-variant-field", Have: 1, Want: wire.ErrMalformed, Why: `validly signed, but the field is "Tenant", not "tenant"`}, sign(pt, caseVariant, "admin-a", "admin-b")},
+		{Case{Name: "raw-payload-sig", Have: 1, Want: wire.ErrThreshold, Why: "admin-a and admin-b signed the raw payload, not the DSSE PAE"}, rawSig},
+		{Case{Name: "mislabeled-keyid", Have: 1, Want: wire.ErrThreshold, Why: "admin-b's genuine signature carries admin-c's key ID; only admin-a counts"}, mislabeled},
+		{Case{Name: "nine-sigs", Have: 1, Want: wire.ErrMalformed, Why: "9 valid trusted signatures, over the cap of 8: shape check fails first"}, sign(pt, v2, "admin-a", "admin-b", "admin-c", "admin-a", "admin-b", "admin-c", "admin-a", "admin-b", "admin-c")},
+		{Case{Name: "trailing-bytes", Have: 1, Want: wire.ErrMalformed, Why: "validly signed, but a second JSON value follows the policy"}, sign(pt, trailing, "admin-a", "admin-b")},
+		{Case{Name: "issued-after-expires", Have: 1, Want: wire.ErrMalformed, Why: "validly signed, but issued_at is a day after expires_at (both in the future)"}, sign(pt, mustJSON(inverted), "admin-a", "admin-b")},
 	}
 
 	m := Manifest{

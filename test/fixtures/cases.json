@@ -123,6 +123,62 @@
       "have": 1,
       "want": "",
       "why": "expired 1 minute before Now; skew is 2 minutes"
+    },
+    {
+      "name": "duplicate-role",
+      "file": "envelopes/duplicate-role.json",
+      "have": 1,
+      "want": "malformed",
+      "why": "validly signed, but role \"sales\" appears twice (the second grants crm.* X)"
+    },
+    {
+      "name": "duplicate-tool",
+      "file": "envelopes/duplicate-tool.json",
+      "have": 1,
+      "want": "malformed",
+      "why": "validly signed, but tool \"crm.read_*\" appears twice in role sales (R, then X)"
+    },
+    {
+      "name": "case-variant-field",
+      "file": "envelopes/case-variant-field.json",
+      "have": 1,
+      "want": "malformed",
+      "why": "validly signed, but the field is \"Tenant\", not \"tenant\""
+    },
+    {
+      "name": "raw-payload-sig",
+      "file": "envelopes/raw-payload-sig.json",
+      "have": 1,
+      "want": "threshold_not_met",
+      "why": "admin-a and admin-b signed the raw payload, not the DSSE PAE"
+    },
+    {
+      "name": "mislabeled-keyid",
+      "file": "envelopes/mislabeled-keyid.json",
+      "have": 1,
+      "want": "threshold_not_met",
+      "why": "admin-b's genuine signature carries admin-c's key ID; only admin-a counts"
+    },
+    {
+      "name": "nine-sigs",
+      "file": "envelopes/nine-sigs.json",
+      "have": 1,
+      "want": "malformed",
+      "why": "9 valid trusted signatures, over the cap of 8: shape check fails first"
+    },
+    {
+      "name": "trailing-bytes",
+      "file": "envelopes/trailing-bytes.json",
+      "have": 1,
+      "want": "malformed",
+      "why": "validly signed, but a second JSON value follows the policy"
+    },
+    {
+      "name": "issued-after-expires",
+      "file": "envelopes/issued-after-expires.json",
+      "have": 1,
+      "want": "malformed",
+      "why": "validly signed, but issued_at is a day after expires_at (both in the future)"
     }
   ]
 }

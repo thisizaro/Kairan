@@ -1,7 +1,6 @@
 # agent identity, written by scripts/new-lane.sh
 .lane
 bin/
-*.key
 keys/
 .env
 # temporary bench output (RESULTS.md is committed)
@@ -9,3 +8,9 @@ bench/out/
 bench/*.tmp
 *.test
 *.out
+# private key material (M-D37); TEST-ONLY fixture keys are public test vectors
+*.seed
+*.priv
+*.pem
+*.key
+!test/fixtures/TEST-ONLY-*
