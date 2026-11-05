@@ -6,7 +6,6 @@ import (
 	"net/url"
 	"os"
 	"sort"
-	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -112,77 +111,10 @@ func checkTimeline(v wire.TimelineView, tenant string) *cliError {
 	}
 	for _, e := range v.Entries {
 		if !e.ProxyID.Valid() || e.Version < 1 || !e.PolicyHash.Valid() ||
-			!validMs(e.FirstSeenUnixMs) || !validMs(e.LastSeenUnixMs) || e.LastSeenUnixMs < e.FirstSeenUnixMs {
+			!validMs(e.FirstSeenUnixMs) || !validMs(e.LastSeenUnixMs) || e.LastSeenUnixMs < e.FirstSeenUnixMs ||
+			(e.LogHead != "" && !e.LogHead.Valid()) {
 			return badAnswer()
 		}
 	}
-	return nil
-}
-
-// cmdEvidenceExport writes the control plane's record of which policy each
-// proxy reported, as plain sentences with JST and UTC times (J5). It is the
-// control plane's word only; the cross-check with proxy apply logs is T-07.
-func cmdEvidenceExport(args []string, s streams) error {
-	fs := flag.NewFlagSet("evidence export", flag.ContinueOnError)
-	cf := addConnFlags(fs)
-	tenant := fs.String("tenant", "", "tenant ID")
-	proxy := fs.String("proxy", "", "only this proxy ID")
-	out := fs.String("out", "", "file to create; default is standard output")
-	if err := parseFlags(fs, args, s); err != nil {
-		return err
-	}
-	if cerr := tenantFlagErr(*tenant); cerr != nil {
-		return cerr
-	}
-	if *proxy != "" && !wire.ID(*proxy).Valid() {
-		return fail("-proxy must be a valid proxy ID", "-proxy には有効なプロキシIDを指定してください")
-	}
-	cl, err := cf.open(s)
-	if err != nil {
-		return err
-	}
-	var view wire.TimelineView
-	if _, cerr := cl.do("GET", wire.PathTimeline, url.Values{wire.QueryTenant: {*tenant}}, nil, &view); cerr != nil {
-		return cerr
-	}
-	if cerr := checkTimeline(view, *tenant); cerr != nil {
-		return cerr
-	}
-	var entries []wire.TimelineEntry
-	for _, e := range view.Entries {
-		if *proxy == "" || string(e.ProxyID) == *proxy {
-			entries = append(entries, e)
-		}
-	}
-	sort.SliceStable(entries, func(i, j int) bool {
-		a, b := entries[i], entries[j]
-		if a.ProxyID != b.ProxyID {
-			return a.ProxyID < b.ProxyID
-		}
-		if a.FirstSeenUnixMs != b.FirstSeenUnixMs {
-			return a.FirstSeenUnixMs < b.FirstSeenUnixMs
-		}
-		return a.Version < b.Version
-	})
-
-	var b strings.Builder
-	fmt.Fprintf(&b, "Evidence export for tenant %s\n", view.Tenant)
-	b.WriteString("Source: the control plane's record of what each proxy reported. Times are when the control plane saw the reports (JST and UTC);\n")
-	b.WriteString("they are not proof from the proxy itself. Compare with the proxy apply logs before relying on this.\n\n")
-	if len(entries) == 0 {
-		b.WriteString("no entries\n")
-	}
-	for _, e := range entries {
-		fmt.Fprintf(&b, "proxy %s enforced version %d (hash %s) from %s to %s\n",
-			e.ProxyID, e.Version, e.PolicyHash, fmtTime(e.FirstSeenUnixMs), fmtTime(e.LastSeenUnixMs))
-	}
-	if *out == "" {
-		_, err := fmt.Fprint(s.out, b.String())
-		return err
-	}
-	if err := createExclusive(*out, []byte(b.String()), 0o644); err != nil {
-		return writeErr(err)
-	}
-	fmt.Fprintf(s.out, "wrote %s (%d entries)\n", *out, len(entries))
 	return nil
 }
