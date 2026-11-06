@@ -256,8 +256,6 @@ func waitFor(limit, every time.Duration, what string, f func() (bool, string)) t
 	}
 }
 
-func ms(d time.Duration) float64 { return float64(d) / float64(time.Millisecond) }
-
 func execOut(name string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

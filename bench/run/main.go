@@ -67,9 +67,6 @@ func main() {
 	}
 	o.writeEnv(*chaosRuns)
 
-	if o.want("m4go") {
-		o.benchM4Go()
-	}
 	needStack := o.want("m1") || o.want("m2m3") || o.want("m4e2e") || o.want("m1sim") || o.want("m7")
 	if needStack {
 		if !o.reuse {
@@ -103,6 +100,10 @@ func main() {
 			o.stackDown() // the chaos tests bring up their own fresh stack
 		}
 		o.benchChaos(*chaosRuns)
+	}
+	// CPU micro-benchmarks last: by now every container of the run is gone, so the machine is as idle as it gets
+	if o.want("m4go") {
+		o.benchM4Go()
 	}
 	logf("done; results in %s", o.out)
 }
