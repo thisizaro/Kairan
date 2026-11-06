@@ -5,7 +5,7 @@ SHELL := /usr/bin/env bash
 # Go steps are skipped while the scaffold has no .go files.
 HAVE_GO := $(shell find . -name '*.go' -not -path './.git/*' -print -quit 2>/dev/null)
 
-.PHONY: ci test break hooks-test fuzz-smoke lint vet check-jsonl vulncheck e2e chaos bench demo demo-down k3d-demo plan log
+.PHONY: ci test break hooks-test fuzz-smoke lint vet check-jsonl vulncheck e2e chaos bench demo demo-down results k3d-demo plan log
 
 ci: vet lint test fuzz-smoke check-jsonl hooks-test vulncheck
 	@echo "make ci: ok"
@@ -80,10 +80,16 @@ endif
 # Compose stack and chaos scenarios (Q-01, Q-02): local Docker only; E2E=1 enables test/e2e.
 e2e:
 	@E2E=1 go test -count=1 -timeout 45m -v ./test/e2e/...
+# S10 changes the stack's policies, so S1-S9 and S10 each get a fresh stack (TestMain brings one up per run).
 chaos:
-	@E2E=1 go test -count=1 -timeout 45m -v -run '^TestS[0-9]+' ./test/e2e/...
+	@E2E=1 go test -count=1 -timeout 45m -v -run '^TestS[1-9][A-Z]' ./test/e2e/...
+	@E2E=1 go test -count=1 -timeout 30m -v -run '^TestS10' ./test/e2e/...
+# Benchmarks M1-M4, M7 (Q-06, M-D66) then RESULTS.md (Q-07); about 50 minutes, local Docker.
 bench:
-	@echo "not implemented yet (see PLAN Q-06)"
+	@go run ./bench/run
+	@go run ./bench/results
+results:
+	@go run ./bench/results
 demo:
 	@deploy/compose/demo.sh demo
 demo-down:
