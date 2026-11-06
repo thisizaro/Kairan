@@ -82,19 +82,19 @@ var knownFields = map[string]bool{
 func LoadConfig(path string) (*Config, error) {
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
-		return nil, usageMsg("config: "+err.Error(), "設定: "+err.Error())
+		return nil, osUsageMsg("config: cannot open the file", "設定: ファイルを開けません", err)
 	}
 	defer f.Close()
 	fi, err := f.Stat()
 	if err != nil {
-		return nil, usageMsg("config: "+err.Error(), "設定: "+err.Error())
+		return nil, osUsageMsg("config: cannot read the file", "設定: ファイルを読めません", err)
 	}
 	if !fi.Mode().IsRegular() {
 		return nil, usageMsg("config: not a regular file", "設定: 通常のファイルではありません")
 	}
 	data, err := io.ReadAll(io.LimitReader(f, maxConfigBytes+1))
 	if err != nil {
-		return nil, usageMsg("config: "+err.Error(), "設定: "+err.Error())
+		return nil, osUsageMsg("config: cannot read the file", "設定: ファイルを読めません", err)
 	}
 	return ParseConfig(data)
 }
@@ -400,6 +400,5 @@ func safeKey(k string) string {
 	if len(k) > 32 {
 		k = k[:32]
 	}
-	q := strconv.Quote(k)
-	return q[1 : len(q)-1]
+	return esc(k)
 }
