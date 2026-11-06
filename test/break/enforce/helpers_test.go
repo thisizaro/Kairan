@@ -358,8 +358,4 @@ func has(list []string, s string) bool {
 	return false
 }
 
-func states() []wire.ProxyState {
-	return []wire.ProxyState{wire.StateBooting, wire.StateDenyAll, wire.StateTampered, wire.StateEnforcing, wire.StateSafeMode}
-}
-
 var _ = state.ReadOnly

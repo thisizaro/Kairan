@@ -82,7 +82,6 @@ func TestStatusCopyIsolation(t *testing.T) {
 	}
 	got[0].Report.LastError.Code = wire.ErrPersist // caller mutates what it got back
 	got[0].Group = "mutated"
-	got = got[:0]
 	again, _ := s.Fleet("bank-a")
 	if len(again) != 1 || again[0].Report.LastError.Code != wire.ErrThreshold || again[0].Group != "main" {
 		t.Fatalf("store aliases the Fleet result: %+v", again)
@@ -235,11 +234,6 @@ func TestSameProxyIDInTwoTenants(t *testing.T) {
 }
 
 // ---- heartbeat coalescing property (C-D3, M-D41): never lose a version/state/anchor/error change ----
-
-type persistedView struct {
-	l   fleet.Last
-	set bool
-}
 
 func importantEqual(a, b fleet.Last) bool {
 	return a.Group == b.Group && a.Report.Tenant == b.Report.Tenant && a.Report.ProxyID == b.Report.ProxyID &&

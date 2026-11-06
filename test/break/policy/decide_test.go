@@ -137,7 +137,7 @@ func TestDecideInvalidToolNames(t *testing.T) {
 		"crm.reаd_x", // cyrillic a
 		"crm．read_x", // fullwidth full stop
 		"ａ",          // fullwidth a
-		"crm.read_é", "crm.read_日本", "crm.read_​", "crm.read_‮", "crm.read_\ufeff",
+		"crm.read_é", "crm.read_日本", "crm.read_\u200b", "crm.read_\u202e", "crm.read_\ufeff",
 		"crm.read_%2e", "crm.read_\xff", "crm.read_\xc0\xaf",
 		"a" + strings.Repeat("l", 128), // 129 chars
 		strings.Repeat("a", 129),
@@ -537,7 +537,7 @@ func TestTrailingWhitespaceRFC8259(t *testing.T) {
 			t.Fatalf("trailing %q changed the policy", tail)
 		}
 	}
-	for _, tail := range []string{"\x00", "\v", "\f", " ", " ", " ", "\ufeff", "\x1c", "\x85", "x", ",", " ,", "\n{", "}", "0", "//", "/**/", " \x00", "᠎"} {
+	for _, tail := range []string{"\x00", "\v", "\f", " ", " ", " ", "\ufeff", "\x1c", "\x85", "x", ",", " ,", "\n{", "}", "0", "//", "/**/", " \x00", "\u180e"} {
 		mustReject(t, "tail-"+fmt.Sprintf("%q", tail), "M-D44: only RFC 8259 whitespace may follow the value", validBase+tail)
 	}
 	// Leading garbage is not whitespace either.

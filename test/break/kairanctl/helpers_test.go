@@ -44,6 +44,7 @@ func buildCtl(t testing.TB) string {
 			buildErr = err.Error()
 			return
 		}
+		builtDir = dir
 		bin := filepath.Join(dir, "kairanctl")
 		args := []string{"build", "-o", bin}
 		if src := os.Getenv("KAIRANCTL_SRC_DIR"); src != "" {
@@ -69,6 +70,18 @@ func buildCtl(t testing.TB) string {
 		t.Fatalf("build failed: %s", buildErr)
 	}
 	return builtBin
+}
+
+// builtDir is the temp dir buildCtl created (empty when KAIRANCTL_BIN was used); TestMain removes it so that
+// repeated runs do not fill /tmp with binaries.
+var builtDir string
+
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if builtDir != "" {
+		_ = os.RemoveAll(builtDir)
+	}
+	os.Exit(code)
 }
 
 type result struct {

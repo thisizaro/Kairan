@@ -21,7 +21,7 @@ func TestS1HappyRollout(t *testing.T) {
 	// before: v1 forbids notes.write for sales on every proxy
 	for _, p := range proxies {
 		if r := w.call(p, w.salesKey, "notes.write"); r.Allowed {
-			t.Fatalf("precondition: %s allowed notes.write under v1", p.ID)
+			t.Fatalf("precondition: %s allowed notes.write under v1: HTTP %d %.300s", p.ID, r.HTTP, r.Text)
 		}
 	}
 
