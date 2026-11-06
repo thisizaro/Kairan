@@ -105,12 +105,18 @@ func cmdEvidence(args []string, s streams) error {
 	return cmdEvidenceExport(args[1:], s)
 }
 
+// isNoPolicy reports a "no policy" period: the proxy booted deny-all and had
+// no signed policy yet, so it reports version 0 and an empty hash.
+func isNoPolicy(e wire.TimelineEntry) bool { return e.Version == 0 && e.PolicyHash == "" }
+
 func checkTimeline(v wire.TimelineView, tenant string) *cliError {
 	if string(v.Tenant) != tenant {
 		return badAnswer()
 	}
 	for _, e := range v.Entries {
-		if !e.ProxyID.Valid() || e.Version < 1 || !e.PolicyHash.Valid() ||
+		// Version 0 with an empty hash is a proxy's deny-all boot (Q-D40,
+		// M-D71); any other mix of version and hash is a bad answer.
+		if !e.ProxyID.Valid() || !(isNoPolicy(e) || e.Version >= 1 && e.PolicyHash.Valid()) ||
 			!validMs(e.FirstSeenUnixMs) || !validMs(e.LastSeenUnixMs) || e.LastSeenUnixMs < e.FirstSeenUnixMs ||
 			(e.LogHead != "" && !e.LogHead.Valid()) {
 			return badAnswer()

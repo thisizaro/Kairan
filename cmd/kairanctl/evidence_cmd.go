@@ -96,6 +96,11 @@ func cmdEvidenceExport(args []string, s streams) error {
 		b.WriteString("no entries\n")
 	}
 	for _, e := range entries {
+		if isNoPolicy(e) {
+			fmt.Fprintf(&b, "proxy %s had no policy (deny-all, version 0) from %s to %s / プロキシ %s はポリシーなし (全拒否・バージョン 0)\n",
+				e.ProxyID, fmtTime(e.FirstSeenUnixMs), fmtTime(e.LastSeenUnixMs), e.ProxyID)
+			continue
+		}
 		fmt.Fprintf(&b, "proxy %s enforced version %d (hash %s) from %s to %s\n",
 			e.ProxyID, e.Version, e.PolicyHash, fmtTime(e.FirstSeenUnixMs), fmtTime(e.LastSeenUnixMs))
 	}
