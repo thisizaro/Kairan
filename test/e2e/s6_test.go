@@ -2,6 +2,8 @@ package e2e
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -63,6 +65,35 @@ func (w *world) expectTampered(t *testing.T, p px, what string) {
 	}
 }
 
+// metricContaining sums the value of every series on the proxy's /metrics whose metric name contains substr.
+func (w *world) metricContaining(p px, substr string) (float64, error) {
+	res, err := w.hc.Get(fmt.Sprintf("http://127.0.0.1:%d/metrics", p.Metrics))
+	if err != nil {
+		return 0, err
+	}
+	defer res.Body.Close()
+	b, _ := io.ReadAll(io.LimitReader(res.Body, 4<<20))
+	var sum float64
+	for _, ln := range strings.Split(string(b), "\n") {
+		if ln == "" || strings.HasPrefix(ln, "#") {
+			continue
+		}
+		name := ln
+		if i := strings.IndexAny(ln, "{ "); i >= 0 {
+			name = ln[:i]
+		}
+		if !strings.Contains(name, substr) {
+			continue
+		}
+		f := strings.Fields(ln)
+		var v float64
+		if _, err := fmt.Sscanf(f[len(f)-1], "%g", &v); err == nil {
+			sum += v
+		}
+	}
+	return sum, nil
+}
+
 // recoverWithNewPolicy releases the next version for the proxy's tenant and waits until the proxy enforces it.
 func (w *world) recoverWithNewPolicy(t *testing.T, p px) uint64 {
 	t.Helper()
@@ -113,8 +144,13 @@ func TestS6TamperedDisk(t *testing.T) {
 		}
 	})
 
+	var seqBeforeTamper uint64
+	var editedLog string
 	t.Run("edited apply log", func(t *testing.T) {
 		p := proxyByID("bank-a-main-5")
+		if s, err := w.self(p); err == nil {
+			seqBeforeTamper = s.LogSeq
+		}
 		stopProxy(t, p)
 		log := readVolumeFile(t, p, "apply.log")
 		lines := strings.Split(strings.TrimRight(log, "\n"), "\n")
@@ -126,7 +162,8 @@ func TestS6TamperedDisk(t *testing.T) {
 			t.Fatalf("unexpected first apply-log entry: %s", lines[0])
 		}
 		lines[0] = strings.Replace(lines[0], `"to":1`, `"to":7`, 1)
-		volumeShell(t, p, "cat > /data/apply.log", strings.Join(lines, "\n")+"\n")
+		editedLog = strings.Join(lines, "\n") + "\n"
+		volumeShell(t, p, "cat > /data/apply.log", editedLog)
 		startProxy(t, p)
 
 		w.expectTampered(t, p, "apply log edited")
@@ -145,7 +182,61 @@ func TestS6TamperedDisk(t *testing.T) {
 			volumeShell(t, p, "rm -f /data/apply.log /data/policy.json", "")
 			startProxy(t, p)
 		})
-		w.recoverWithNewPolicy(t, p)
+		v := w.recoverWithNewPolicy(t, p)
+
+		// Q-D30 / P-13: Enforcing again at v+1 (recoverWithNewPolicy waited for it) ...
+		if s, err := w.self(p); err != nil || s.State != string(wire.StateEnforcing) || s.AppliedVersion != v {
+			t.Errorf("after the newer valid policy: %+v (%v), want enforcing at v%d", s, err, v)
+		}
+		// ... the broken log is kept as evidence, with the edit still in it, never deleted ...
+		ls := strings.Fields(volumeShell(t, p, "ls /data", ""))
+		var broken []string
+		for _, f := range ls {
+			if strings.HasPrefix(f, "apply.log.broken-") {
+				broken = append(broken, f)
+			}
+		}
+		if len(broken) != 1 {
+			t.Fatalf("want exactly one apply.log.broken-<n> in the data dir, found %v (ls: %v)", broken, ls)
+		}
+		if kept := volumeShell(t, p, "cat /data/"+broken[0], ""); kept != editedLog {
+			t.Errorf("%s is not the edited log byte for byte:\n%s\nwant:\n%s", broken[0], kept, editedLog)
+		}
+		editedFirst := strings.SplitN(editedLog, "\n", 2)[0]
+		if fresh := volumeShell(t, p, "cat /data/apply.log", ""); strings.Contains(fresh, editedFirst) {
+			t.Errorf("the new apply.log still carries the edited first entry")
+		}
+		// ... a reset is reported (P-13: kairan_proxy_apply_log_resets_total) and the new chain starts with a reset entry ...
+		if n, err := w.metric(p, "kairan_proxy_apply_log_resets_total"); err != nil || n < 1 {
+			t.Errorf("kairan_proxy_apply_log_resets_total = %v (%v) on %s, want >= 1", n, err, p.ID)
+		}
+		if first := volumeShell(t, p, "head -n 1 /data/apply.log", ""); !strings.Contains(first, `"reset":{`) || !strings.Contains(first, `"seq":1`) {
+			t.Errorf("the new apply.log does not start with a reset entry: %s", first)
+		}
+		// ... and the control plane timeline shows the anchor regression as its own period (M-D48).
+		tv, err := w.timeline(p.Tenant)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var mine []wire.TimelineEntry
+		for _, e := range tv.Entries {
+			if string(e.ProxyID) == p.ID {
+				mine = append(mine, e)
+			}
+		}
+		regressed := false
+		var maxSeq uint64
+		for _, e := range mine { // entries are in the CP's order; the maximum seen so far is the anchor to beat
+			if e.LogSeq != 0 && e.LogSeq < maxSeq {
+				regressed = true
+			}
+			if e.LogSeq > maxSeq {
+				maxSeq = e.LogSeq
+			}
+		}
+		if !regressed {
+			t.Errorf("timeline of %s shows no log_seq regression (seq before tamper %d); entries: %+v", p.ID, seqBeforeTamper, mine)
+		}
 	})
 
 	t.Run("older valid policy put back", func(t *testing.T) {

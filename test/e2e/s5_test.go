@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -68,6 +69,50 @@ func (w *world) extraTrusted(t *testing.T) (x, y ed25519.PrivateKey) {
 	return privX, privY
 }
 
+// cpMetrics returns every series of the control plane's /metrics whose name is `name`, keyed by its label text
+// (for example `code="threshold-not-met",tenant="bank-a"`), value as float.
+func (w *world) cpMetrics(name string) (map[string]float64, error) {
+	res, err := w.hc.Get("http://127.0.0.1:19100/metrics")
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+	b, _ := io.ReadAll(io.LimitReader(res.Body, 8<<20))
+	out := map[string]float64{}
+	for _, ln := range strings.Split(string(b), "\n") {
+		if !strings.HasPrefix(ln, name+"{") && !strings.HasPrefix(ln, name+" ") {
+			continue
+		}
+		f := strings.Fields(ln)
+		var v float64
+		if _, err := fmt.Sscanf(f[len(f)-1], "%g", &v); err != nil {
+			continue
+		}
+		labels := ""
+		if i := strings.Index(ln, "{"); i >= 0 {
+			labels = ln[i+1 : strings.LastIndex(ln, "}")]
+		}
+		out[labels] = v
+	}
+	return out, nil
+}
+
+// rejectedSum adds up kairan_cp_publish_rejected_total series carrying code and (if non-empty) tenant.
+func rejectedSum(m map[string]float64, code wire.ErrorCode, tenant string) float64 {
+	var sum float64
+	for labels, v := range m {
+		// C-D13: the code label is the wire error code with hyphens (threshold-not-met), as obs label values must be wire IDs
+		if !strings.Contains(labels, `code="`+strings.ReplaceAll(string(code), "_", "-")+`"`) {
+			continue
+		}
+		if tenant != "" && !strings.Contains(labels, `tenant="`+tenant+`"`) {
+			continue
+		}
+		sum += v
+	}
+	return sum
+}
+
 // S5 bad policies published: unsigned, 1-sig, old version, wrong tenant, expired, corrupted.
 // Pass: 0 applied; every reason visible (fleet view, fleet page in English and Japanese, proxy metrics).
 // Two layers judge: the control plane's publish check (sanity) and the proxies. Cases the control plane
@@ -103,6 +148,7 @@ func TestS5BadPolicies(t *testing.T) {
 		{"old version (v1 again)", w.envelope(goodPayload("bank-a", 1), "admin-a", "admin-b"), []wire.ErrorCode{wire.ErrConflict}},
 	}
 	for _, g := range gate {
+		rejBefore, mErr := w.cpMetrics("kairan_cp_publish_rejected_total")
 		code, ec, _, err := w.publish(g.env)
 		ok := false
 		for _, want := range g.want {
@@ -110,6 +156,17 @@ func TestS5BadPolicies(t *testing.T) {
 		}
 		if err != nil || code/100 != 4 || !ok {
 			t.Errorf("gate %q: HTTP %d code %q (err %v), want 4xx with one of %v", g.name, code, ec, err, g.want)
+		}
+		// section 11 S5 "visible ... in metrics" (Q-D31, C-08): the CP counts each publish-time rejection by tenant and code
+		tenant := "bank-a"
+		if ec == wire.ErrWrongTenant || ec == wire.ErrMalformed { // malformed: the envelope is refused before its tenant is read
+			tenant = "unknown" // C-D13: an unknown or unparsable tenant counts under tenant="unknown"
+		}
+		rejAfter, mErr2 := w.cpMetrics("kairan_cp_publish_rejected_total")
+		if mErr != nil || mErr2 != nil {
+			t.Errorf("gate %q: reading CP metrics: %v / %v", g.name, mErr, mErr2)
+		} else if d := rejectedSum(rejAfter, ec, tenant) - rejectedSum(rejBefore, ec, tenant); d < 1 {
+			t.Errorf("gate %q: kairan_cp_publish_rejected_total{tenant=%q,code=%q} grew by %v, want >= 1 (C-08); series now: %v", g.name, tenant, ec, d, rejAfter)
 		}
 	}
 	if code, ec, _ := w.admin("POST", wire.PathRollouts, wire.RolloutRequest{Tenant: "bank-a", Version: 1}, nil); code != http.StatusConflict {
