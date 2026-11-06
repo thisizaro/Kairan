@@ -141,6 +141,7 @@ type ClockGuard struct {
 	untrusted bool
 	episodes  uint64
 	saveErr   error
+	log       *slog.Logger         // logs a change of the untrusted flag; may be nil
 	syncFn    func(*os.File) error // fsync; replaced in tests
 }
 
@@ -251,6 +252,13 @@ func (g *ClockGuard) observeLocked() time.Time {
 	if u && !g.untrusted {
 		g.episodes++
 	}
+	if g.log != nil && u != g.untrusted {
+		if u {
+			say(g.log, slog.LevelWarn, evClockUntrusted)
+		} else {
+			say(g.log, slog.LevelInfo, evClockTrusted)
+		}
+	}
 	g.untrusted = u
 	return eff
 }
@@ -321,7 +329,16 @@ func (g *ClockGuard) saveLocked() (err error) {
 	return nil
 }
 
-// Run saves the high-water mark every HighWaterInterval of monotonic time and
+// SetLog gives the guard a logger for the changes of the untrusted flag: a
+// warning when the clock becomes untrusted and an info line when it is trusted
+// again (one line per change, never a time or a path). A nil logger is silent.
+func (g *ClockGuard) SetLog(log *slog.Logger) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.log = log
+}
+
+// Run saves the high-water mark every HighWaterInterval of monotonic time (and looks at the clock) and
 // once more when ctx ends, whose error (if any) it returns. Failed periodic
 // saves are logged (log may be nil) and kept in SaveErr; the next tick retries.
 func (g *ClockGuard) Run(ctx context.Context, log *slog.Logger) error {
@@ -333,6 +350,7 @@ func (g *ClockGuard) Run(ctx context.Context, log *slog.Logger) error {
 			if err := g.Save(); err != nil && log != nil {
 				say(log, slog.LevelError, evClockSave, "err", err)
 			}
+			g.Untrusted() // look, so a change is logged even if nothing else asks
 		}
 	}
 }
@@ -351,9 +369,9 @@ func removeStaleTemps(dir string) {
 	}
 }
 
-var errTooBig = errors.New("file too big")
+var errTooBig = ErrTooLarge
 
-var errNotRegular = errors.New("not a regular file")
+var errNotRegular = ErrNotRegular
 
 // readSmall reads the file at path only if it is a regular file. The open is
 // non-blocking and does not follow a symlink, so a FIFO or device placed at

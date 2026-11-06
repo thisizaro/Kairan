@@ -267,25 +267,25 @@ func runLocal(ctx context.Context, args []string, stderr io.Writer, ready, local
 	}
 	dl, err := declog.Open(filepath.Join(cfg.DataDir, decisionLogFile), declog.Options{Metrics: stats})
 	if err != nil {
-		return msg("cannot open the decision log: "+err.Error(), "判断ログを開けません: "+err.Error())
+		return osMsg("cannot open the decision log (decisions.log in data_dir)", "判断ログ (data_dir の decisions.log) を開けません", err)
 	}
 	defer dl.Close()
 
 	ecfg := enforce.Config{Upstream: cfg.Upstream, APIKeys: cfg.APIKeys, SafeMode: cfg.SafeMode}
 	if err := ecfg.Validate(); err != nil {
-		return usageMsg("invalid configuration: "+err.Error(), "設定が正しくありません: "+err.Error())
+		return osUsageMsg("invalid configuration (upstream or api_keys)", "設定が正しくありません (upstream または api_keys)", err)
 	}
 	hc, err := agent.NewHTTPClient(cfg.CAFile)
 	if err != nil {
-		return usageMsg("invalid configuration: "+err.Error(), "設定が正しくありません: "+err.Error())
+		return osUsageMsg("ca_file cannot be used", "ca_file を使えません", err)
 	}
 	holder := &enforce.Holder{}
 	ag, err := agent.New(acfg, st, al, holder, clk, hc, log, stats)
 	if err != nil {
-		return usageMsg("invalid configuration: "+err.Error(), "設定が正しくありません: "+err.Error())
+		return osUsageMsg("invalid configuration", "設定が正しくありません", err)
 	}
 	if err := ag.Boot(); err != nil {
-		return msg("cannot start: "+err.Error(), "起動できません: "+err.Error())
+		return osMsg("cannot start", "起動できません", err)
 	}
 	snap := ag.Snapshot()
 	say(log, slog.LevelInfo, evBooted, "state", string(snap.State), "applied_version", snap.AppliedVersion)
@@ -335,7 +335,7 @@ func runLocal(ctx context.Context, args []string, stderr io.Writer, ready, local
 	case <-ctx.Done():
 	case err := <-serveErr:
 		if !errors.Is(err, http.ErrServerClosed) {
-			runErr = msg("a listener failed: "+err.Error(), "待ち受けが失敗しました: "+err.Error())
+			runErr = osMsg("a listener failed", "待ち受けが失敗しました", err)
 		}
 	}
 	say(log, slog.LevelInfo, evShuttingDown)
@@ -351,21 +351,16 @@ func runLocal(ctx context.Context, args []string, stderr io.Writer, ready, local
 	}
 	stopAgent()
 	if err := <-agentDone; err != nil {
-		say(log, slog.LevelError, evHighWaterLost, "err", err.Error())
+		say(log, slog.LevelError, evHighWaterLost, "err", errText(err))
 	}
 	say(log, slog.LevelInfo, evStopped)
 	return runErr
 }
 
 // listenErr says that an address cannot be bound. It names the config key and
-// the system's reason, not the address.
+// the class of the failure, not the address.
 func listenErr(key string, err error) error {
-	reason := err.Error()
-	var oe *net.OpError
-	if errors.As(err, &oe) && oe.Err != nil {
-		reason = oe.Err.Error()
-	}
-	return msg("cannot listen for "+key+": "+reason, key+" の待ち受けを開始できません: "+reason)
+	return osMsg("cannot listen for "+key, key+" の待ち受けを開始できません", err)
 }
 
 // noteTestOnlyKeys warns loudly, and counts, when a trusted key is a public
