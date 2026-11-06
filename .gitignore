@@ -1,5 +1,3 @@
-# agent identity, written by scripts/new-lane.sh
-.lane
 bin/
 keys/
 .env

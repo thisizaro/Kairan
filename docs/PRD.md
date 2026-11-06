@@ -1,6 +1,6 @@
 # Kairan (回覧): Product Requirements
 
-Source: Aro's approved design of 2026-11-05 (not in this repository). This PRD is the top source of truth. If this file and the source disagree, stop and file an `incident`.
+Source: the original design document of 2026-11-05 (not published). This PRD is the top source of truth. If this file and the source disagree, stop and file an `incident`.
 Independent project; not affiliated with RAYVEN. Anything about Tumiki comes from public pages and is marked *(assumption)* where guessed.
 
 ## 1. Problem

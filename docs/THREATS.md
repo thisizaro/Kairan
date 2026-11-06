@@ -1,6 +1,6 @@
 # Kairan: Threats (STRIDE)
 
-**Reviewed at Gate G0 by security-reviewer; rulings M-D23 to M-D37.** Source: Aro's approved design of 2026-11-05 (not in this repository); the PRD is the top source of truth. Invariants I1-I6 are defined in `docs/PRD.md`. Scenario IDs S1-S13 are the chaos scenarios (ARCHITECTURE §11, M-D50). Every row cites its proof: a test, a PLAN task or a decision. G2 checks that each cited test exists and passes.
+**Reviewed at Gate G0 by security-reviewer; rulings M-D23 to M-D37.** Source: the original design document of 2026-11-05 (not published); the PRD is the top source of truth. Invariants I1-I6 are defined in `docs/PRD.md`. Scenario IDs S1-S13 are the chaos scenarios (ARCHITECTURE §11, M-D50). Every row cites its proof: a test, a PLAN task or a decision. G2 checks that each cited test exists and passes.
 
 Assets: the policy in force on each proxy; the data inside the customer network (payloads, prompts, PII); signing keys; the apply log.
 Trust: admins' machines and the proxy's local config are trusted; the control plane and the network are **not**.

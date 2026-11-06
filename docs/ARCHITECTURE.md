@@ -1,6 +1,6 @@
 # Kairan: Architecture (HLD + LLD)
 
-Source: Aro's approved design of 2026-11-05 (not in this repository). The PRD, then this file, is the top source of truth. Order of truth: PRD, then this file, then PLAN, then decisions.jsonl. View diagrams with the VS Code extension `bierner.markdown-mermaid`, or paste into https://mermaid.live.
+Source: the original design document of 2026-11-05 (not published). The PRD, then this file, is the top source of truth. Order of truth: PRD, then this file, then PLAN, then decisions.jsonl. View diagrams with the VS Code extension `bierner.markdown-mermaid`, or paste into https://mermaid.live.
 
 ## 1. System and trust boundaries
 Each dashed box is a separate organization's network. **Only metadata crosses a boundary.**
@@ -245,7 +245,6 @@ Test files are exempt from R2 and R3 only. Separately, `wire` is the **frozen co
 ### Folder layout
 ```
 kairan/
-├── AGENTS.md  CLAUDE.md  Makefile  go.mod  arch_test.go (R1-R6)
 ├── docs/       PRD.md  ARCHITECTURE.md  PLAN.md  THREATS.md  decisions.jsonl  commits.jsonl
 ├── cmd/        kairan-cp/ kairan-proxy/ kairanctl/ fakemcp/ kairan-sim/
 ├── internal/   wire/ clock/ obs/ policy/ trust/
@@ -255,59 +254,8 @@ kairan/
 │               fixtures/ (TEST-ONLY keys, golden envelopes)
 ├── bench/      scripts + RESULTS.md generator
 ├── deploy/     compose/  k8s/ (stretch)
-├── scripts/    commit.sh log-decision.sh plan.sh new-lane.sh merge-lane.sh sync-lane.sh check-jsonl.sh
 ├── .githooks/  pre-commit
-└── .claude/    settings.json  agents/  hooks/
 ```
-
-## 7. Phases, lanes, ownership
-```mermaid
-flowchart LR
-    subgraph P0["Phase 0: contracts (sequential)"]
-        C0["Overseer + Aro<br/>PRD, ARCHITECTURE, PLAN, THREATS<br/>wire types, interfaces, fixtures"]
-        G0{{"Gate G0<br/>design freeze<br/>+ threat review"}}
-        C0 --> G0
-    end
-
-    subgraph P1["Phase 1: parallel build (one git worktree per lane)"]
-        LT["Lane T - dev<br/>policy + trust + kairanctl"]
-        LP["Lane P - dev<br/>proxy + fakemcp"]
-        LC["Lane C - dev<br/>control plane + fleet page"]
-        LQ["Lane Q - black-box tester<br/>break passes, compose, chaos S1-S13<br/>from docs, wire and go doc only"]
-    end
-
-    subgraph P2["Phase 2: integrate and break it"]
-        G1{{"Gate G1<br/>merge, make ci green"}}
-        CH["Chaos suite runs<br/>devs fix failures"]
-        BN["sim + bench<br/>RESULTS.md"]
-        G2{{"Gate G2<br/>security + code review"}}
-        G1 --> CH --> BN --> G2
-    end
-
-    subgraph P3["Phase 3: ship"]
-        DOC["README JA/EN<br/>LIMITATIONS"]
-        K3D["k3d stretch (S11)"]
-        VID["Video + message"]
-    end
-
-    G0 --> LT & LP & LC & LQ
-    LT -. "lands first (~half day)" .-> LP & LC
-    LP & LC & LQ --> G1
-    G2 --> DOC --> VID
-    G2 --> K3D
-```
-
-| Lane | Role · model | May edit | May not |
-|---|---|---|---|
-| M (Overseer, main session) | Opus 5.5 | `docs/` (PLAN and JSONL only via scripts), `internal/wire/`, `internal/clock/`, `test/fixtures/` (Phase 0), root config, `scripts/`, `.claude/`, `.githooks/` | Lane product code |
-| T | Developer · Sonnet 5.5 | `internal/policy/`, `internal/trust/`, `cmd/kairanctl/`, `test/fixtures/` until `.frozen` exists | `wire`, `test/e2e/` |
-| P | Developer · Sonnet 5.5 | `internal/proxy/`, `cmd/kairan-proxy/`, `cmd/fakemcp/` | `internal/cp/`, `wire`, `test/e2e/` |
-| C | Developer · Sonnet 5.5 | `internal/cp/`, `internal/obs/`, `cmd/kairan-cp/` | `internal/proxy/`, `wire`, `test/e2e/` |
-| Q | Black-box tester · Sonnet 5.5 | `test/e2e/`, `test/break/`, `deploy/`, `bench/`, `cmd/kairan-sim/` | Read or edit `internal/` and `cmd/` (exceptions: may read `internal/wire/`, `test/fixtures/` and `cmd/kairan-sim/`; sees other packages' exported API through `go doc` only, never `-src`; M-D17) |
-| R | Security reviewer · Opus 5.5 | nothing (read-only; appends `risk`/`incident` decisions via scripts) | all edits |
-| All | n/a | Append to `docs/*.jsonl` only through scripts | Edit or delete existing log lines |
-
-Unit tests live next to the code and belong to the developer lane. e2e and break tests (`test/e2e/`, `test/break/`) belong to Q only. If one is wrong, the developer files an `incident`; they never edit it. A task is `done` only after a break pass: Q attacks the package in `test/break/<pkg>/`, the developer fixes each failure, and the Overseer re-runs both test sets (M-D15, M-D17).
 
 ## 8. Failure behavior
 | Situation | Behavior |
@@ -381,14 +329,14 @@ The exact bytes inside `wire.Envelope.Payload`. Strict: unknown fields, a missin
 | tool pattern | exact name, or a non-empty prefix ending in a single trailing `*` (`slack.*`, `crm.read_*`). A bare `*` is malformed. Tool names: 1-128 chars of `[A-Za-z0-9_.-]` |
 | matching | case-sensitive and byte-exact. Exact match wins, else the longest matching prefix; no match = deny. The matched rule's class is the tool's class. Safe mode (`read_only`) allows class `R` only |
 
-### `internal/wire` · lane M
+### `internal/wire`
 - **Responsibility:** JSON contract between control plane, proxy and kairanctl: paths, limits, timing, envelope, poll, status, admin views, error codes.
 - **Must uphold:** I4 by construction (status holds only numbers, bools, validated named strings; codes, never text); strict decoding. Changes need a decision entry.
 - **Interface:** code in `internal/wire` (PLAN O-02; decisions M-D2 to M-D4, M-D24 to M-D26). G0 additions:
   - Error codes `unavailable` (503, with Retry-After) and `method_not_allowed` (405) (M-D31); `clock_untrusted`, an `ApplyError` code (M-D30).
   - `StatusReport` fields `log_seq` (uint64) and `log_head` (Hash): the apply log's last seq and head hash, metadata only (M-D35). `TestStatusReportCannotCarryPayload` covers them (M-D25).
 
-### `internal/clock` · lane M
+### `internal/clock`
 - **Responsibility:** Clock interface with a real and a fake implementation.
 - **Must uphold:** Core packages never call `time.Now()` directly (arch rule R3).
 - **Interface:** code in `internal/clock` (PLAN O-04, M-D23, which replaces M-D1).
@@ -402,7 +350,7 @@ type Clock interface {
 // Fake: Advance moves wall and mono; Set moves wall only (may go backwards); BlockUntil unchanged.
 ```
 
-### `internal/policy` · lane T · core
+### `internal/policy` · core
 - **Responsibility:** Strict parse and validate (§10.0); matcher; safe-mode filter.
 - **Must uphold:** I3: unknown input means deny; never panics on garbage (fuzzed, seeds include duplicate and case-variant keys). Duplicate keys at any level, non-lowercase field names and a bare `*` are `malformed`; matching is case-sensitive and byte-exact (M-D32). Pure, no I/O. `BenchmarkDecide` (1,000 rules, ReportAllocs) lives here (M-D28).
 ```go
@@ -419,7 +367,7 @@ func (p *Policy) Decide(role, tool string, safeMode bool) Decision
 func (p *Policy) Visible(role string, tools []string, safeMode bool) []string // tools/list filter, keeps order
 ```
 
-### `internal/trust` · lane T · core
+### `internal/trust` · core
 - **Responsibility:** DSSE PAE, key IDs, signing helper, 2-of-N verification, accept rules.
 - **Must uphold:** I1, I2. Verifies the exact signed bytes. Fuzz the decoder. Pure, no I/O. A Root with Threshold < 2 or fewer keys than Threshold is never a pass: Verify and Accept return `ErrBadRoot` (M-D33). Skew is at most 5m; a larger value is rejected at config load (M-D33).
 ```go
@@ -441,7 +389,7 @@ func Verify(env wire.Envelope, root Root) (Verified, wire.ErrorCode, error)
 func Accept(env wire.Envelope, root Root, have uint64, now time.Time, skew time.Duration) (Verified, wire.ErrorCode, error)
 ```
 
-### `internal/cp/fleet` · lane C · core
+### `internal/cp/fleet` · core
 - **Responsibility:** Classify health and compute drift; build the fleet view.
 - **Must uphold:** Defaults stale 30s, lost 2m (configurable). Pure, no I/O.
 ```go
@@ -452,7 +400,7 @@ func Health(seenAt, now time.Time, th Thresholds) wire.Health
 func View(tenant wire.ID, desired map[wire.ID]uint64, proxies []Last, now time.Time, th Thresholds) wire.FleetView
 ```
 
-### `internal/cp/rollout` · lane C · core
+### `internal/cp/rollout` · core
 - **Responsibility:** Rollout state machine: Canary → Promoting → Complete, or Halted.
 - **Must uphold:** Halts on a canary apply error for this version or a lost canary; never lowers a group's desired version. Pure, no I/O.
 ```go
@@ -471,7 +419,7 @@ func Step(r Rollout, fleet wire.FleetView, now time.Time) (Rollout, map[wire.ID]
 const CanaryGroup wire.ID = "canary"
 ```
 
-### `internal/cp/store` · lane C
+### `internal/cp/store`
 - **Responsibility:** JSON-file storage: envelopes, rollouts, last status per proxy, timeline.
 - **Must uphold:** Atomic writes (temp, fsync, rename). Never stores payload beyond the signed envelope. Safe for concurrent use. The timeline keeps each report's `log_seq` and `log_head` (M-D35); a backwards anchor starts a new entry (M-D48); at most 256 entries per proxy, oldest dropped and counted in `TimelineView.Dropped` and `kairan_cp_timeline_dropped_total` (M-D55, M-D56).
 ```go
@@ -487,7 +435,7 @@ type Store interface {
 func OpenFiles(dir string) (Store, error)
 ```
 
-### `internal/cp/api` · lane C
+### `internal/cp/api`
 - **Responsibility:** HTTP handlers for every path in `wire`; long-poll wake-ups; rollout ticking.
 - **Must uphold:** I4; strict decoding with wire limits; tokens compared with `crypto/subtle`; publish checks signatures against the tenant's admin keys (sanity only; proxies are the judges). Limits (M-D9, M-D31):
   - Auth runs before any body read or poll registration. Missing or wrong token: 401 `unauthorized`. Valid token for another proxy, or a tenant in the poll or status that is not the proxy's enrollment tenant: 403 `forbidden`.
@@ -509,14 +457,14 @@ func (s *Server) Handler() http.Handler
 func (s *Server) HTTPServer(addr string) *http.Server  // timeouts per M-D9 / M-D31
 ```
 
-### `internal/cp/web` · lane C
+### `internal/cp/web`
 - **Responsibility:** Fleet page in Japanese and English (`html/template` + `embed`), auto-refresh.
 - **Must uphold:** Metadata only; all output escaped; JST and UTC times.
 ```go
 func Handler(st store.Store, clk clock.Clock, th fleet.Thresholds) http.Handler // GET /?tenant=&lang=ja|en
 ```
 
-### `internal/obs` · lane C
+### `internal/obs`
 - **Responsibility:** Hand-written Prometheus text format; slog setup.
 - **Must uphold:** I4: label values are `wire.ID`s only, so call data can't become a label.
 ```go
@@ -530,7 +478,7 @@ func (r *Registry) Handler() http.Handler                       // text/plain; v
 func NewLogger(w io.Writer, level slog.Level) *slog.Logger      // JSON, UTC
 ```
 
-### `internal/proxy/state` · lane P · core
+### `internal/proxy/state` · core
 - **Responsibility:** Proxy state machine (Booting, DenyAll, Tampered, Enforcing, SafeMode) and what each state allows.
 - **Must uphold:** I3: no transition widens permissions beyond the last valid, signed, unexpired policy. Pure, no I/O. Safe mode is an enum, `read_only` (default) or `deny_all`; nothing wider (M-D33). An untrusted clock is not an event: it is reported as `clock_untrusted`, and expiry already uses `effective_now` (M-D30).
 ```go
@@ -550,7 +498,7 @@ func Next(s wire.ProxyState, e Event) wire.ProxyState
 func Allows(s wire.ProxyState, d policy.Decision, mode SafeMode) bool
 ```
 
-### `internal/proxy/enforce` · lane P
+### `internal/proxy/enforce`
 - **Responsibility:** JSON-RPC interception of `tools/list` and `tools/call`; pass-through for everything else; API key → role; local decision log.
 - **Must uphold:** I3, I5: every decision carries policy version + hash; in-flight calls finish under the policy they started with. A decision-log write failure denies the call (fail closed) and is counted (M-D33).
 - **Strict request handling (M-D33, from R-D2).** Tests in P-02 and `test/break/enforce` cover each item.
@@ -572,7 +520,7 @@ type Config struct { Upstream *url.URL; APIKeys map[string]string /* key -> role
 func New(cfg Config, h *Holder, dl DecisionLog, clk clock.Clock, m *obs.Registry) http.Handler
 ```
 
-### `internal/proxy/store` · lane P
+### `internal/proxy/store`
 - **Responsibility:** Atomic persistence of the last good envelope.
 - **Must uphold:** I3: a stored file that fails verification is never enforced (caller goes Tampered). Temp, fsync, rename; fsync the directory. On apply the caller runs Save, then `applylog.Append` (M-D33).
 ```go
@@ -581,7 +529,7 @@ func (s *Store) Save(env wire.Envelope) error
 func (s *Store) Load() (env wire.Envelope, found bool, err error)
 ```
 
-### `internal/proxy/applylog` · lane P
+### `internal/proxy/applylog`
 - **Responsibility:** Append-only, hash-chained log of apply attempts; verifier.
 - **Must uphold:** I6: edit, delete or reorder is detected. Tail truncation is detected by comparing the last seq and head with the control plane's anchor (`log_seq`, `log_head` in every status report; kairanctl evidence flags a regression; M-D35). Also the source of the highest applied version across restarts (I2).
 Seq starts at 1 and grows by 1; an empty log reports `log_seq` 0 and an empty `log_head`; otherwise `log_seq` = last Seq and `log_head` = its Self (wire validates the pairing, M-D39).
@@ -602,7 +550,7 @@ func (l *Log) LastApplied() (version uint64, hash wire.Hash)
 func Verify(r io.Reader) (last Entry, n int, err error)   // used by kairanctl too
 ```
 
-### `internal/proxy/agent` · lane P
+### `internal/proxy/agent`
 - **Responsibility:** Boot, long-poll loop, status loop (immediate after apply, else every 10s), backoff, outbound only, honors `HTTPS_PROXY`.
 - **Must uphold:** I1, I2, I4: verify via `trust`, version must beat the apply log, metadata-only reports (including `log_seq`, `log_head`), failures keep the current policy.
 - **Boot (M-D33):** see the boot rule in section 4. Apply order: Save, then Append.
@@ -623,30 +571,30 @@ func (a *Agent) Boot() error                      // load, Verify, compare with 
 func (a *Agent) Run(ctx context.Context) error    // poll + status loops until ctx is done
 ```
 
-### `cmd/kairan-cp` · lane C
+### `cmd/kairan-cp`
 - **Responsibility:** Thin main: flags `-config cp.json`, `-admin-token-file FILE` (or `KCP_ADMIN_TOKEN_FILE` / `KCP_ADMIN_TOKEN`; never a flag value) and `-check`; `cp.json` holds `listen`, `data_dir`, metrics listener, TLS or `allow_plaintext`, admin keys and threshold, proxy enrollments as `token_sha256` (C-D9, M-D54); wiring; graceful shutdown on SIGTERM/SIGINT.
 - **`cp.json` schema (M-D61, Q-D26):** strict JSON, unknown, duplicate and case-variant keys rejected. Top level: `listen` (host:port), `data_dir`, `metrics_listen` (optional; warning when not loopback), `tls_cert_file` + `tls_key_file` (TLS 1.2 minimum) or `allow_plaintext: true` (loud warning), `log_level`, `canary_dwell_seconds`, `tenants` `{<tenant id>: {threshold, admin_keys: [hex ed25519 public keys]}}` (threshold >= 2 and <= number of keys), `enrollments` `[{proxy_id, tenant, group, token_sha256}]`. No private key material anywhere (C-D10). Every message for a person, warnings included, is in English and Japanese.
 - **Must uphold:** No logic.
 
-### `cmd/kairan-proxy` · lane P
+### `cmd/kairan-proxy`
 - **Responsibility:** Thin main: `-config proxy.json` holding `tenant`, `proxy_id`, `cp_url`, `token`, `trusted_keys` (hex public keys), `threshold`, `listen`, `upstream`, `api_keys` (key → role), `data_dir`, `safe_mode` (`read_only` default, `deny_all`), `ca_file`, `allow_plaintext`. `-import <file>` applies an offline signed bundle through `trust.Accept`, Save, then Append (J3, P-11).
 - **Must uphold:** Trust root only from local config. Config load rejects skew > 5m and any `safe_mode` outside the enum (M-D33). If a trusted key is a TEST-ONLY key, log a loud warning and set a metric (M-D37).
 
-### `cmd/kairanctl` · lane T
+### `cmd/kairanctl`
 - **Responsibility:** `keygen`, `policy new`, `sign`, `approve`, `publish`, `rollout start|status`, `fleet`, `evidence`, `verify-applylog`.
 - **Must uphold:** Private keys never leave the admin's machine; `keygen` writes the private key with mode 0600 and refuses to overwrite an existing file (M-D37); `approve` refuses to add a second signature from the same key and shows the policy as rendered from `policy.Parse` plus its hash, never the raw text (M-D32). HTTP client timeout 30s and the TLS rules of `proxy/agent` (M-D31). `evidence` cross-checks the CP timeline against proxy apply logs and flags any version, seq or head mismatch or regression (T-07; M-D29, M-D35).
 
-### `cmd/fakemcp` · lane P
+### `cmd/fakemcp`
 - **Responsibility:** Tiny MCP server over Streamable HTTP with harmless tools: `notes.read` (R), `notes.write` (W), `crm.read_contact` (R), `crm.export` (X). Echoes nothing secret.
 - **Must uphold:** Test and demo only.
 
-### `cmd/kairan-sim` · lane Q
+### `cmd/kairan-sim`
 - **Responsibility:** `-cp URL -n 1000 -tenant sim` runs N simulated proxies (real HTTP long-poll + status, same timing as `wire`), prints JSON results.
 - **Must uphold:** Always labeled simulated; uses only `wire` (black-box).
 
 ## 11. Chaos scenarios S1-S13
 
-S1-S11 follow the numbering of Aro's design spec (M-D50, superseding the G0 draft M-D38); S12 and S13 are additions kept from that draft. Each runs against the compose stack (S11 on k3d, S13 with `kairan-sim`) and passes or fails automatically. Required: S1-S8, S10, S12. Optional: S9, S13. Stretch: S11.
+S1-S11 follow the numbering of the original design document (M-D50, superseding the G0 draft M-D38); S12 and S13 are additions kept from that draft. Each runs against the compose stack (S11 on k3d, S13 with `kairan-sim`) and passes or fails automatically. Required: S1-S8, S10, S12. Optional: S9, S13. Stretch: S11.
 
 | ID | Scenario | Pass when | Proves |
 |---|---|---|---|
