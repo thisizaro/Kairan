@@ -99,9 +99,13 @@ func storedVersionIs(t testing.TB, dir string, want uint64) {
 		t.Errorf("policy.json: %v", err)
 		return
 	}
+	// compare the version, not the bytes: validPolicy stamps time.Now(), so two builds of "v4" differ
 	var env wire.Envelope
-	if err := json.Unmarshal(raw, &env); err != nil || !bytes.Equal(env.Payload, good(t, want).Payload) {
-		t.Errorf("policy.json is not v%d (%v)", want, err)
+	var doc struct {
+		Version uint64 `json:"version"`
+	}
+	if err := json.Unmarshal(raw, &env); err != nil || json.Unmarshal(env.Payload, &doc) != nil || doc.Version != want {
+		t.Errorf("policy.json is not v%d (version %d, %v)", want, doc.Version, err)
 	}
 }
 
@@ -470,4 +474,3 @@ func TestForgedResetEntriesNeverVerify(t *testing.T) {
 		}
 	})
 }
-
