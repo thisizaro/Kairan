@@ -147,7 +147,9 @@ func TestS5BadPolicies(t *testing.T) {
 		{"old version (same as current)", w.envelope(goodPayload("bank-a", cur), "admin-a", "admin-b"), []wire.ErrorCode{wire.ErrConflict}},
 		{"old version (v1 again)", w.envelope(goodPayload("bank-a", 1), "admin-a", "admin-b"), []wire.ErrorCode{wire.ErrConflict}},
 	}
+	badTried, badApplied := 0, 0 // M6 evidence: bad policies put in front of the fleet, and how many any proxy applied
 	for _, g := range gate {
+		badTried++
 		rejBefore, mErr := w.cpMetrics("kairan_cp_publish_rejected_total")
 		code, ec, _, err := w.publish(g.env)
 		ok := false
@@ -203,6 +205,7 @@ func TestS5BadPolicies(t *testing.T) {
 			}, wire.ErrExpired, ""},
 	}
 	for _, c := range cases {
+		badTried++
 		t.Run(c.name, func(t *testing.T) {
 			rejectedBefore, _ := w.metric(canary, "kairan_proxy_policies_rejected_total")
 			v := w.nextVersion("bank-a")
@@ -230,6 +233,7 @@ func TestS5BadPolicies(t *testing.T) {
 			fv, _ := w.fleet("bank-a")
 			for _, r := range fv.Proxies {
 				if r.AppliedVersion != cur || string(r.PolicyHash) != before[string(r.ProxyID)].PolicyHash {
+					badApplied++
 					t.Errorf("%s applied v%d (hash %.12s) after a bad policy; was v%d", r.ProxyID, r.AppliedVersion, r.PolicyHash, cur)
 				}
 				if r.Group == "main" && r.DesiredVersion != cur {
@@ -261,6 +265,8 @@ func TestS5BadPolicies(t *testing.T) {
 			}
 		})
 	}
+
+	t.Logf("S5 result: %d bad policies, %d applied (a count of proxies that moved off the current policy after any of them)", badTried, badApplied)
 
 	// recovery: a good, higher, two-signature version fixes the halted rollout and reaches every proxy
 	v, hash, _ := w.release(t, "bank-a", 5)
