@@ -150,7 +150,7 @@ func TestCallDecisionTable(t *testing.T) {
 		{"sales", strings.Repeat("a", 129), 0, false},
 		{"sales", "crm.read_" + strings.Repeat("a", 200), 0, false}, // matches the prefix but exceeds 128 chars
 		{"sales", "crm.read_é", 0, false},                           // outside the tool alphabet
-		{"sales", "crm.read_‮contact", 0, false},
+		{"sales", "crm.read_\u202econtact", 0, false},
 		{"sales", "admin.shutdown", 0, false},
 		{"engineer", "github.anything_at_all", 'R', true},
 		{"engineer", "github.create_issue", 'W', true},
@@ -196,7 +196,7 @@ func TestCallDecisionTable(t *testing.T) {
 			if rec.Tool != "" && rec.Tool != c.tool {
 				t.Fatalf("record tool %q", rec.Tool)
 			}
-			if c.tool != "" && strings.ContainsAny(c.tool, " \n\x00;é‮") && rec.Tool != "" {
+			if c.tool != "" && strings.ContainsAny(c.tool, " \n\x00;é\u202e") && rec.Tool != "" {
 				t.Fatalf("a tool name outside the alphabet was logged verbatim: %q (doc: logged as \"\")", rec.Tool)
 			}
 		})

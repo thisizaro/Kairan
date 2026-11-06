@@ -764,7 +764,7 @@ func TestTLSVerificationIsNeverSkipped(t *testing.T) {
 	// Redirect from https to http must not be followed either (downgrade).
 	plain := newCP(t, false, okReply)
 	dg := newCP(t, true, func(w http.ResponseWriter, r *http.Request, _ []byte) {
-		http.Redirect(w, r, plain.srv.URL+r.URL.Path, 302)
+		http.Redirect(w, r, plain.srv.URL+r.URL.Path, http.StatusFound)
 	})
 	writeFile(t, filepath.Join(d, "dgca.pem"), pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: dg.srv.Certificate().Raw}), 0o644)
 	runIn(t, bin, d, connEnv(tok), "", "fleet", "-tenant", "bank-a", "-url", dg.srv.URL, "-ca-file", "dgca.pem")

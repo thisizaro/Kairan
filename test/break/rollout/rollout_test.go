@@ -916,6 +916,15 @@ func TestHugeFleet(t *testing.T) {
 	r := rollout.Start(req(8, 1), 7, t0, 0)
 	start := time.Now()
 	n, des := rollout.Step(r, f, t0)
+	// first step: canary acked just now, dwell not over: still Canary, every non-canary group keeps its previous version
+	if n.Phase != wire.PhaseCanary {
+		t.Fatalf("first step at the canary ack: phase %q, want canary", n.Phase)
+	}
+	for g, v := range des {
+		if g != rollout.CanaryGroup && v != 7 {
+			t.Fatalf("first step: group %q desired v%d, want it to stay at 7 during the canary", g, v)
+		}
+	}
 	n, des = rollout.Step(n, f, t0.Add(time.Hour))
 	if time.Since(start) > 60*time.Second {
 		t.Fatalf("Step over 150k proxies took %v", time.Since(start))
