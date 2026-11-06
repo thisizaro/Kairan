@@ -18,6 +18,10 @@ package main
 //     entry in the log; and the log's newest applied version is the one the
 //     control plane last saw.
 //
+// A period with version 0 and an empty hash is a proxy's deny-all boot (Q-D40,
+// M-D71): "no policy". It is printed as such, never compared with the log's
+// applied versions, and its anchor is checked like any other.
+//
 // Dropped timeline entries (the control plane keeps at most 256 per proxy;
 // M-D55) are reported as a WARNING, because the export is then incomplete,
 // but they are not a mismatch and do not change the exit code.
@@ -246,6 +250,9 @@ func checkAgainstLog(id wire.ID, periods []wire.TimelineEntry, log []applylog.En
 					fmt.Sprintf("プロキシ %s: seq %d でコントロールプレーンが記録したヘッド %s (%s) と、プロキシのログのヘッド %s が一致しません (ログの書き換え、または別のログです)", id, e.LogSeq, shortHash(e.LogHead), at, shortHash(log[e.LogSeq-1].Self))})
 			}
 		}
+		if isNoPolicy(e) {
+			continue // no policy was enforced; there is nothing in the log to match (M-D71)
+		}
 		hashes, ok := applied[e.Version]
 		switch {
 		case !ok:
@@ -258,8 +265,22 @@ func checkAgainstLog(id wire.ID, periods []wire.TimelineEntry, log []applylog.En
 				fmt.Sprintf("プロキシ %s: バージョン %d は適用ログにありますが、コントロールプレーンの記録 (%s, %s) とハッシュが異なります", id, e.Version, shortHash(e.PolicyHash), at)})
 		}
 	}
-	last := periods[len(periods)-1]
+	// The newest period that enforced a policy; "no policy" periods are not
+	// compared with the log.
+	var last *wire.TimelineEntry
+	for i := len(periods) - 1; i >= 0; i-- {
+		if !isNoPolicy(periods[i]) {
+			last = &periods[i]
+			break
+		}
+	}
 	switch {
+	case last == nil:
+		if newest != nil {
+			out = append(out, finding{id, "version",
+				fmt.Sprintf("proxy %s: the apply log's newest applied version is %d, but the control plane has only seen the proxy without a policy (a newer apply may not have been reported yet)", id, newest.To),
+				fmt.Sprintf("プロキシ %s: 適用ログの最新の適用バージョンは %d ですが、コントロールプレーンはポリシーなしの状態しか確認していません (新しい適用がまだ報告されていない可能性があります)", id, newest.To)})
+		}
 	case newest == nil:
 		out = append(out, finding{id, "version",
 			fmt.Sprintf("proxy %s: the apply log has no applied version, but the control plane last saw version %d", id, last.Version),
