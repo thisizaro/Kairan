@@ -424,6 +424,9 @@ func TestPromotingThenHaltedKeepsDesired(t *testing.T) {
 	if r2 != r {
 		t.Fatalf("halted rollout changed: %+v", r2)
 	}
+	if len(des) != 0 {
+		t.Fatalf("empty fleet should yield no desired entries: %v", des)
+	}
 	_, des = Step(r, fleetOf(px{id: "m1", group: "main", applied: prevVer}), t0.Add(2*time.Hour))
 	if des["main"] != ver {
 		t.Fatalf("later step: %v", des)
