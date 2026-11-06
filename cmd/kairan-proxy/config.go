@@ -5,8 +5,6 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
-	"fmt"
 	"io"
 	"net"
 	"net/url"
@@ -84,19 +82,19 @@ var knownFields = map[string]bool{
 func LoadConfig(path string) (*Config, error) {
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
-		return nil, fmt.Errorf("config: %w", err)
+		return nil, usageMsg("config: "+err.Error(), "設定: "+err.Error())
 	}
 	defer f.Close()
 	fi, err := f.Stat()
 	if err != nil {
-		return nil, fmt.Errorf("config: %w", err)
+		return nil, usageMsg("config: "+err.Error(), "設定: "+err.Error())
 	}
 	if !fi.Mode().IsRegular() {
-		return nil, errors.New("config: not a regular file")
+		return nil, usageMsg("config: not a regular file", "設定: 通常のファイルではありません")
 	}
 	data, err := io.ReadAll(io.LimitReader(f, maxConfigBytes+1))
 	if err != nil {
-		return nil, fmt.Errorf("config: %w", err)
+		return nil, usageMsg("config: "+err.Error(), "設定: "+err.Error())
 	}
 	return ParseConfig(data)
 }
@@ -105,7 +103,7 @@ func LoadConfig(path string) (*Config, error) {
 // problem; they never repeat a value, so a token or key cannot reach a log.
 func ParseConfig(data []byte) (*Config, error) {
 	if len(data) > maxConfigBytes {
-		return nil, errors.New("config: too large")
+		return nil, usageMsg("config: too large", "設定: ファイルが大きすぎます")
 	}
 	if err := checkObjectKeys(data); err != nil {
 		return nil, err
@@ -114,30 +112,31 @@ func ParseConfig(data []byte) (*Config, error) {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&fc); err != nil {
-		return nil, errors.New("config: not valid JSON of the expected shape (a field has the wrong type)")
+		return nil, usageMsg("config: not valid JSON of the expected shape (a field has the wrong type)",
+			"設定: 期待する形の JSON ではありません (型が正しくない項目があります)")
 	}
 	if _, err := dec.Token(); err != io.EOF {
-		return nil, errors.New("config: data after the JSON object")
+		return nil, usageMsg("config: data after the JSON object", "設定: JSON オブジェクトの後ろに余分なデータがあります")
 	}
 	return fc.check()
 }
 
 func (fc *fileConfig) check() (*Config, error) {
-	bad := func(field, why string) (*Config, error) {
-		return nil, fmt.Errorf("config: %s: %s", field, why)
+	bad := func(field, why, whyJa string) (*Config, error) {
+		return nil, usageMsg("config: "+field+": "+why, "設定: "+field+": "+whyJa)
 	}
 	c := &Config{}
 
 	if fc.Tenant == nil || !wire.ID(*fc.Tenant).Valid() {
-		return bad("tenant", "required, 1-63 characters of a-z 0-9 -")
+		return bad("tenant", "required, 1-63 characters of a-z 0-9 -", "必須です。a-z 0-9 - の 1〜63 文字")
 	}
 	c.Tenant = wire.ID(*fc.Tenant)
 	if fc.ProxyID == nil || !wire.ID(*fc.ProxyID).Valid() {
-		return bad("proxy_id", "required, 1-63 characters of a-z 0-9 -")
+		return bad("proxy_id", "required, 1-63 characters of a-z 0-9 -", "必須です。a-z 0-9 - の 1〜63 文字")
 	}
 	c.ProxyID = wire.ID(*fc.ProxyID)
 	if fc.Token == nil || *fc.Token == "" {
-		return bad("token", "required")
+		return bad("token", "required", "必須です")
 	}
 	c.Token = *fc.Token
 	if fc.AllowPlaintext != nil {
@@ -145,47 +144,47 @@ func (fc *fileConfig) check() (*Config, error) {
 	}
 
 	if fc.CPURL == nil {
-		return bad("cp_url", "required")
+		return bad("cp_url", "required", "必須です")
 	}
-	cp, err := parseURL(*fc.CPURL)
-	if err != nil {
-		return bad("cp_url", err.Error())
+	cp, perr := parseURL(*fc.CPURL)
+	if perr != nil {
+		return bad("cp_url", perr.en, perr.ja)
 	}
 	switch {
 	case cp.Scheme == "https":
 	case cp.Scheme == "http" && c.AllowPlaintext:
 	case cp.Scheme == "http":
-		return bad("cp_url", "http needs allow_plaintext: true (demo only); use https")
+		return bad("cp_url", "http needs allow_plaintext: true (demo only); use https", "http には allow_plaintext: true が必要です (デモ専用)。https を使ってください")
 	default:
-		return bad("cp_url", "must be an https URL")
+		return bad("cp_url", "must be an https URL", "https の URL にしてください")
 	}
 	c.CP = cp
 
 	// Trust root: hex ed25519 public keys, distinct, threshold of at least 2
 	// and at most the number of keys (M-D33).
 	if len(fc.TrustedKeys) == 0 || len(fc.TrustedKeys) > maxTrustedKeys {
-		return bad("trusted_keys", fmt.Sprintf("required, 1 to %d hex public keys", maxTrustedKeys))
+		return bad("trusted_keys", "required, 1 to "+strconv.Itoa(maxTrustedKeys)+" hex public keys", "必須です。16 進数の公開鍵を 1〜"+strconv.Itoa(maxTrustedKeys)+" 個")
 	}
 	keys := make(map[wire.Hash]ed25519.PublicKey, len(fc.TrustedKeys))
 	for _, h := range fc.TrustedKeys {
 		raw, err := hex.DecodeString(h)
 		if err != nil || len(raw) != ed25519.PublicKeySize {
-			return bad("trusted_keys", "each item must be a public key in 64 hex characters")
+			return bad("trusted_keys", "each item must be a public key in 64 hex characters", "各項目は 64 文字の 16 進数の公開鍵にしてください")
 		}
 		id := trust.KeyID(raw)
 		if _, dup := keys[id]; dup {
-			return bad("trusted_keys", "the same key is listed twice")
+			return bad("trusted_keys", "the same key is listed twice", "同じ鍵が 2 回書かれています")
 		}
 		keys[id] = ed25519.PublicKey(raw)
 	}
 	if fc.Threshold == nil {
-		return bad("threshold", "required (at least 2)")
+		return bad("threshold", "required (at least 2)", "必須です (2 以上)")
 	}
 	if *fc.Threshold < 2 {
-		return bad("threshold", "must be at least 2: no single key may approve a policy")
+		return bad("threshold", "must be at least 2: no single key may approve a policy", "2 以上にしてください。1 つの鍵だけではポリシーを承認できません")
 	}
 	if *fc.Threshold > len(keys) {
-		return bad("threshold", "is higher than the number of trusted_keys")
+		return bad("threshold", "is higher than the number of trusted_keys", "trusted_keys の数より大きくできません")
 	}
 	c.Root = trust.Root{Tenant: c.Tenant, Keys: keys, Threshold: *fc.Threshold}
 
@@ -193,10 +192,10 @@ func (fc *fileConfig) check() (*Config, error) {
 	if fc.Skew != nil {
 		d, err := time.ParseDuration(*fc.Skew)
 		if err != nil {
-			return bad("skew", "not a duration such as 2m")
+			return bad("skew", "not a duration such as 2m", "2m のような期間ではありません")
 		}
 		if d < 0 || d > trust.MaxSkew {
-			return bad("skew", "must be between 0 and 5m")
+			return bad("skew", "must be between 0 and 5m", "0 から 5m の間にしてください")
 		}
 		c.Skew = d
 	}
@@ -207,61 +206,61 @@ func (fc *fileConfig) check() (*Config, error) {
 		case state.ReadOnly, state.DenyAll:
 			c.SafeMode = state.SafeMode(*fc.SafeMode)
 		default:
-			return bad("safe_mode", "must be read_only or deny_all")
+			return bad("safe_mode", "must be read_only or deny_all", "read_only か deny_all にしてください")
 		}
 	}
 
 	if fc.Listen == nil {
-		return bad("listen", "required, host:port")
+		return bad("listen", "required, host:port", "必須です。host:port の形式")
 	}
 	_, port, err := net.SplitHostPort(*fc.Listen)
 	if err != nil {
-		return bad("listen", "must be host:port")
+		return bad("listen", "must be host:port", "host:port の形式にしてください")
 	}
 	if _, err := strconv.ParseUint(port, 10, 16); err != nil {
-		return bad("listen", "port must be a number from 0 to 65535")
+		return bad("listen", "port must be a number from 0 to 65535", "ポートは 0 から 65535 の数にしてください")
 	}
 	c.Listen = *fc.Listen
 
 	if fc.MetricsListen != nil {
 		_, port, err := net.SplitHostPort(*fc.MetricsListen)
 		if err != nil {
-			return bad("metrics_listen", "must be host:port")
+			return bad("metrics_listen", "must be host:port", "host:port の形式にしてください")
 		}
 		n, err := strconv.ParseUint(port, 10, 16)
 		if err != nil {
-			return bad("metrics_listen", "port must be a number from 0 to 65535")
+			return bad("metrics_listen", "port must be a number from 0 to 65535", "ポートは 0 から 65535 の数にしてください")
 		}
 		if *fc.MetricsListen == c.Listen && n != 0 {
-			return bad("metrics_listen", "must differ from listen")
+			return bad("metrics_listen", "must differ from listen", "listen と別のアドレスにしてください")
 		}
 		c.MetricsListen = *fc.MetricsListen
 	}
 
 	if fc.Upstream == nil {
-		return bad("upstream", "required")
+		return bad("upstream", "required", "必須です")
 	}
-	up, err := parseURL(*fc.Upstream)
-	if err != nil {
-		return bad("upstream", err.Error())
+	up, perr := parseURL(*fc.Upstream)
+	if perr != nil {
+		return bad("upstream", perr.en, perr.ja)
 	}
 	if up.Scheme != "http" && up.Scheme != "https" {
-		return bad("upstream", "must be an http or https URL")
+		return bad("upstream", "must be an http or https URL", "http か https の URL にしてください")
 	}
 	c.Upstream = up
 
 	if len(fc.APIKeys) == 0 {
-		return bad("api_keys", "required, an object of API key to role")
+		return bad("api_keys", "required, an object of API key to role", "必須です。API キーからロールへのオブジェクト")
 	}
 	for k, role := range fc.APIKeys {
-		if k == "" || role == "" || !printable(k) || !printable(role) {
-			return bad("api_keys", "keys and roles must be non-empty, without spaces or control characters")
+		if k == "" || !printable(k) || !wire.ID(role).Valid() {
+			return bad("api_keys", "keys must be non-empty without spaces or control characters; roles must be IDs (1-63 of a-z, 0-9, -)", "キーは空でなく、空白や制御文字を含めないでください。ロールは ID (a-z 0-9 - の 1〜63 文字) にしてください")
 		}
 	}
 	c.APIKeys = fc.APIKeys
 
 	if fc.DataDir == nil || *fc.DataDir == "" {
-		return bad("data_dir", "required")
+		return bad("data_dir", "required", "必須です")
 	}
 	c.DataDir = *fc.DataDir
 	if fc.CAFile != nil {
@@ -272,16 +271,16 @@ func (fc *fileConfig) check() (*Config, error) {
 
 // parseURL accepts an absolute URL with a host and no credentials, query or
 // fragment.
-func parseURL(s string) (*url.URL, error) {
+func parseURL(s string) (*url.URL, *cliError) {
 	u, err := url.Parse(s)
 	if err != nil || u.Scheme == "" || u.Host == "" || u.Hostname() == "" {
-		return nil, errors.New("must be an absolute URL with a host")
+		return nil, msg("must be an absolute URL with a host", "ホストを含む絶対 URL にしてください")
 	}
 	if u.User != nil {
-		return nil, errors.New("must not contain a user name or password")
+		return nil, msg("must not contain a user name or password", "ユーザー名やパスワードを含めないでください")
 	}
 	if u.RawQuery != "" || u.Fragment != "" {
-		return nil, errors.New("must not contain a query or fragment")
+		return nil, msg("must not contain a query or fragment", "クエリやフラグメントを含めないでください")
 	}
 	return u, nil
 }
@@ -325,10 +324,10 @@ func checkObjectKeys(data []byte) error {
 	dec.UseNumber()
 	tok, err := dec.Token()
 	if err != nil {
-		return errors.New("config: not valid JSON")
+		return usageMsg("config: not valid JSON", "設定: 正しい JSON ではありません")
 	}
 	if d, ok := tok.(json.Delim); !ok || d != '{' {
-		return errors.New("config: must be a JSON object")
+		return usageMsg("config: must be a JSON object", "設定: JSON オブジェクトにしてください")
 	}
 	if err := walkObject(dec, 1, true); err != nil {
 		return err
@@ -338,31 +337,31 @@ func checkObjectKeys(data []byte) error {
 
 func walkObject(dec *json.Decoder, depth int, top bool) error {
 	if depth > maxJSONDepth {
-		return errors.New("config: nested too deeply")
+		return usageMsg("config: nested too deeply", "設定: 入れ子が深すぎます")
 	}
 	seen := map[string]bool{}
 	for dec.More() {
 		kt, err := dec.Token()
 		if err != nil {
-			return errors.New("config: not valid JSON")
+			return usageMsg("config: not valid JSON", "設定: 正しい JSON ではありません")
 		}
 		key, ok := kt.(string)
 		if !ok {
-			return errors.New("config: not valid JSON")
+			return usageMsg("config: not valid JSON", "設定: 正しい JSON ではありません")
 		}
 		if seen[key] {
-			return errors.New("config: duplicate key (a field appears twice)")
+			return usageMsg("config: duplicate key (a field appears twice)", "設定: キーが重複しています (同じ項目が 2 回あります)")
 		}
 		seen[key] = true
 		if top && !knownFields[key] {
-			return fmt.Errorf("config: unknown field %s", safeKey(key))
+			return usageMsg("config: unknown field "+safeKey(key), "設定: 未知の項目です: "+safeKey(key))
 		}
 		if err := walkValue(dec, depth); err != nil {
 			return err
 		}
 	}
 	if _, err := dec.Token(); err != nil { // closing brace
-		return errors.New("config: not valid JSON")
+		return usageMsg("config: not valid JSON", "設定: 正しい JSON ではありません")
 	}
 	return nil
 }
@@ -370,7 +369,7 @@ func walkObject(dec *json.Decoder, depth int, top bool) error {
 func walkValue(dec *json.Decoder, depth int) error {
 	tok, err := dec.Token()
 	if err != nil {
-		return errors.New("config: not valid JSON")
+		return usageMsg("config: not valid JSON", "設定: 正しい JSON ではありません")
 	}
 	d, ok := tok.(json.Delim)
 	if !ok {
@@ -381,7 +380,7 @@ func walkValue(dec *json.Decoder, depth int) error {
 		return walkObject(dec, depth+1, false)
 	case '[':
 		if depth+1 > maxJSONDepth {
-			return errors.New("config: nested too deeply")
+			return usageMsg("config: nested too deeply", "設定: 入れ子が深すぎます")
 		}
 		for dec.More() {
 			if err := walkValue(dec, depth+1); err != nil {
@@ -389,7 +388,7 @@ func walkValue(dec *json.Decoder, depth int) error {
 			}
 		}
 		if _, err := dec.Token(); err != nil {
-			return errors.New("config: not valid JSON")
+			return usageMsg("config: not valid JSON", "設定: 正しい JSON ではありません")
 		}
 	}
 	return nil

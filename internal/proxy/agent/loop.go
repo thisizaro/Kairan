@@ -6,12 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"sync"
 	"time"
 
-	"kairan/internal/trust"
 	"kairan/internal/wire"
 )
 
@@ -172,7 +172,7 @@ func (a *Agent) pollOnce(ctx context.Context) time.Duration {
 			return 0
 		}
 		a.stats.Inc(MetricPollErrors)
-		a.log.Warn("poll failed", "kind", errKind(err))
+		say(a.log, slog.LevelWarn, evPollFailed, "kind", errKind(err))
 		return a.backoff()
 	}
 	defer resp.Body.Close()
@@ -193,27 +193,21 @@ func (a *Agent) pollOnce(ctx context.Context) time.Duration {
 		return 0
 	case http.StatusServiceUnavailable:
 		a.stats.Inc(MetricPollErrors)
-		a.log.Warn("control plane unavailable")
+		say(a.log, slog.LevelWarn, evCPDown)
 		return a.retryAfterDelay(resp.Header)
 	default:
 		a.stats.Inc(MetricPollErrors)
-		a.log.Warn("poll refused", "http", resp.StatusCode, "code", string(readErrorCode(resp.Body)))
+		say(a.log, slog.LevelWarn, evPollRefuse, "http", resp.StatusCode, "code", string(readErrorCode(resp.Body)))
 		return a.backoff()
 	}
 }
 
 // onPollBody decodes a 200 body and applies it. The envelope inside is read
-// with the strict decoder (M-D46); the outer version is advisory only.
+// with the strict decoder (M-D46), and so is the wrapper around it (duplicate
+// and case-variant keys are a rejected answer, Q-D27); the outer version is
+// advisory only.
 func (a *Agent) onPollBody(body io.Reader) time.Duration {
-	var raw struct {
-		Version  uint64          `json:"version"`
-		Envelope json.RawMessage `json:"envelope"`
-	}
-	var env wire.Envelope
-	err := wire.Decode(body, wire.MaxEnvelopeBytes+pollSlack, &raw)
-	if err == nil {
-		env, err = trust.DecodeEnvelope(raw.Envelope)
-	}
+	version, env, err := decodePoll(body)
 	if err != nil {
 		var from uint64
 		if a.al != nil {
@@ -222,7 +216,7 @@ func (a *Agent) onPollBody(body io.Reader) time.Duration {
 		a.reject(wire.ErrMalformed, 0, "", from)
 		return a.rejectDelay()
 	}
-	if a.apply(env, raw.Version) {
+	if a.apply(env, version) {
 		return 0
 	}
 	return a.rejectDelay()
@@ -313,7 +307,7 @@ func (a *Agent) sendStatus(ctx context.Context) {
 	rep := a.report()
 	if err := rep.Validate(); err != nil {
 		a.stats.Inc(MetricStatusErrors)
-		a.log.Error("status report invalid; not sent", "state", string(rep.State))
+		say(a.log, slog.LevelError, evStatusBad, "state", string(rep.State))
 		return
 	}
 	body, err := json.Marshal(rep)
@@ -334,7 +328,7 @@ func (a *Agent) sendStatus(ctx context.Context) {
 	if err != nil {
 		if ctx.Err() == nil {
 			a.stats.Inc(MetricStatusErrors)
-			a.log.Warn("status report failed", "kind", errKind(err))
+			say(a.log, slog.LevelWarn, evStatusFail, "kind", errKind(err))
 		}
 		return
 	}
@@ -354,6 +348,6 @@ func (a *Agent) sendStatus(ctx context.Context) {
 		a.mu.Unlock()
 	default:
 		a.stats.Inc(MetricStatusErrors)
-		a.log.Warn("status report refused", "http", resp.StatusCode)
+		say(a.log, slog.LevelWarn, evStatusNo, "http", resp.StatusCode)
 	}
 }

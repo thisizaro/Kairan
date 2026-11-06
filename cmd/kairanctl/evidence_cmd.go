@@ -60,7 +60,7 @@ func cmdEvidenceExport(args []string, s streams) error {
 		return err
 	}
 	var view wire.TimelineView
-	if _, cerr := cl.do("GET", wire.PathTimeline, url.Values{wire.QueryTenant: {*tenant}}, nil, &view); cerr != nil {
+	if _, cerr := cl.doChecked("GET", wire.PathTimeline, url.Values{wire.QueryTenant: {*tenant}}, nil, &view, strictTimelineKeys); cerr != nil {
 		return cerr
 	}
 	if cerr := checkTimeline(view, *tenant); cerr != nil {

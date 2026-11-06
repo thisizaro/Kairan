@@ -5,6 +5,7 @@
 // Usage:
 //
 //	kairan-proxy -config proxy.json
+//	kairan-proxy -config proxy.json -import bundle.json
 //
 // This file is only wiring (ARCHITECTURE section 10, cmd/kairan-proxy). The
 // logic is in internal/proxy/agent (boot, poll, status), internal/proxy/enforce
@@ -92,10 +93,48 @@
 // argument, result, role, API key or user data (invariant I4). The policy hash
 // is in the self view and never a metric label.
 //
+// # Offline import (P-11, PRD J3)
+//
+// With -import, kairan-proxy does not serve and does not use the network. It
+// reads one JSON-encoded signed envelope (what kairanctl sign and approve
+// write) and applies it to data_dir by the same path as a policy from the
+// control plane: the strict decoder, trust.Accept (a threshold of distinct
+// trusted signatures, tenant, a version above everything applied before, not
+// expired at effective_now), store.Save, then an apply-log entry. The trust
+// root is the one in proxy.json. A rejected bundle (unsigned, one signature,
+// old version, wrong tenant, expired, corrupted, not an envelope) applies
+// nothing, leaves the policy in force and the stored file unchanged, and is
+// written to the apply log with its reason. A bundle file that is not a
+// regular file (a FIFO, a device, a directory) or is larger than an envelope
+// may be is refused before it is read. An apply log that fails verification
+// means nothing is imported. The result is printed in English and Japanese on
+// standard error; nothing from the bundle is printed. A proxy that starts
+// afterwards enforces the imported policy from disk; an import does not
+// change a proxy that is already running.
+//
+// # The data directory is locked
+//
+// A process takes an exclusive lock on data_dir/kairan.lock for its whole
+// run (the proxy) or until it is done (an import), waiting up to 5 seconds. A
+// second process (an import beside a running proxy, or two proxies) stops
+// with "the data directory is in use", so two writers can never break the
+// apply-log chain. The lock goes away with the process.
+//
 // # Exit status
 //
-// 0 after a clean shutdown, 2 for a bad command line or config, 1 for a
-// runtime failure at startup.
+// 0 after a clean shutdown, a successful import or -h, 2 for a bad command
+// line or config, 1 for a runtime failure at startup or a rejected or
+// unreadable bundle.
+//
+// # Messages are in English and Japanese (PRD J7)
+//
+// Every message for a person is printed in both languages. An error is an
+// English line and a Japanese line ("kairan-proxy: error: ..." then
+// "kairan-proxy: エラー: ..."); a bad command line also prints the usage; -h
+// prints the usage, in both languages, on standard error. Log lines (JSON on
+// standard error) keep the English text in msg and add the Japanese text in
+// msg_ja. A message never holds a config value, a token, a key or bundle
+// content.
 package main
 
 import (
@@ -115,10 +154,8 @@ import (
 
 	"kairan/internal/clock"
 	"kairan/internal/proxy/agent"
-	"kairan/internal/proxy/applylog"
 	"kairan/internal/proxy/declog"
 	"kairan/internal/proxy/enforce"
-	"kairan/internal/proxy/store"
 )
 
 // Metric name for a TEST-ONLY trusted key (M-D37).
@@ -135,15 +172,23 @@ var errUsage = errors.New("usage")
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	err := run(ctx, os.Args[1:], os.Stderr, nil)
+	code := execute(ctx, os.Args[1:], os.Stderr)
 	stop()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "kairan-proxy:", err)
-		if errors.Is(err, errUsage) {
-			os.Exit(2)
-		}
-		os.Exit(1)
+	os.Exit(code)
+}
+
+// execute is main without the exit: it runs the program, prints any error in
+// both languages and returns the exit status (0, 1 or 2).
+func execute(ctx context.Context, args []string, stderr io.Writer) int {
+	err := run(ctx, args, stderr, nil)
+	if err == nil {
+		return 0
 	}
+	report(stderr, err)
+	if errors.Is(err, errUsage) {
+		return 2
+	}
+	return 1
 }
 
 // run is main without the process: tests call it with a cancellable context.
@@ -158,18 +203,33 @@ func run(ctx context.Context, args []string, stderr io.Writer, ready func(addr s
 // called if metrics_listen is not set.
 func runLocal(ctx context.Context, args []string, stderr io.Writer, ready, localReady func(addr string)) error {
 	fs := flag.NewFlagSet("kairan-proxy", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	fs.SetOutput(io.Discard) // the flag package speaks English only; see flagError and usageText
 	cfgPath := fs.String("config", "", "path to proxy.json")
+	importPath := fs.String("import", "", "apply this offline signed bundle to the data directory and exit")
 	if err := fs.Parse(args); err != nil {
-		return fmt.Errorf("%w: %v", errUsage, err)
+		if isHelp(err) {
+			fmt.Fprint(stderr, usageText)
+			return nil
+		}
+		return flagError(err)
 	}
-	if fs.NArg() != 0 || *cfgPath == "" {
-		fs.Usage()
-		return fmt.Errorf("%w: need -config proxy.json", errUsage)
+	importSet := false
+	fs.Visit(func(f *flag.Flag) { importSet = importSet || f.Name == "import" })
+	switch {
+	case fs.NArg() != 0:
+		return cmdLineMsg("unexpected argument; usage: kairan-proxy -config FILE [-import FILE]",
+			"余分な引数があります。使い方: kairan-proxy -config FILE [-import FILE]")
+	case *cfgPath == "":
+		return cmdLineMsg("-config is required", "-config は必須です")
+	case importSet && *importPath == "":
+		return cmdLineMsg("-import needs a file name", "-import にはファイル名が必要です")
 	}
 	cfg, err := LoadConfig(*cfgPath)
 	if err != nil {
-		return fmt.Errorf("%w: %v", errUsage, err)
+		return err
+	}
+	if importSet {
+		return importBundle(cfg, *importPath, stderr)
 	}
 	log := slog.New(slog.NewJSONHandler(stderr, nil))
 	clk := clock.NewReal()
@@ -177,58 +237,51 @@ func runLocal(ctx context.Context, args []string, stderr io.Writer, ready, local
 
 	noteTestOnlyKeys(cfg, stats, log)
 
-	st, err := store.Open(cfg.DataDir)
+	unlock, err := lockDataDir(cfg.DataDir)
 	if err != nil {
-		return fmt.Errorf("data_dir: %w", err)
-	}
-	guard, err := agent.OpenClockGuard(clk, cfg.DataDir)
-	switch {
-	case errors.Is(err, agent.ErrHighWaterCorrupt):
-		log.Warn("high-water file is corrupt; it will be rewritten")
-	case err != nil:
 		return err
+	}
+	defer unlock()
+	st, guard, al, logErr, err := openData(cfg, clk, log)
+	if err != nil {
+		return err
+	}
+	if al != nil {
+		defer al.Close()
 	}
 
 	acfg := agent.Config{
 		CP: cfg.CP, Tenant: cfg.Tenant, ProxyID: cfg.ProxyID, Token: cfg.Token, Root: cfg.Root,
-		Skew: cfg.Skew, Guard: guard, AllowPlaintext: cfg.AllowPlaintext,
-	}
-	al, err := applylog.Open(filepath.Join(cfg.DataDir, applyLogFile), clk)
-	if err != nil {
-		// Do not repair or work around it: boot as Tampered, apply nothing.
-		log.Error("apply log failed verification; starting tampered (deny-all)", "err", err)
-		al, acfg.LogOpenErr = nil, err
-	} else {
-		defer al.Close()
+		Skew: cfg.Skew, Guard: guard, AllowPlaintext: cfg.AllowPlaintext, LogOpenErr: logErr,
 	}
 	dl, err := declog.Open(filepath.Join(cfg.DataDir, decisionLogFile), declog.Options{Metrics: stats})
 	if err != nil {
-		return fmt.Errorf("decision log: %w", err)
+		return msg("cannot open the decision log: "+err.Error(), "判断ログを開けません: "+err.Error())
 	}
 	defer dl.Close()
 
 	ecfg := enforce.Config{Upstream: cfg.Upstream, APIKeys: cfg.APIKeys, SafeMode: cfg.SafeMode}
 	if err := ecfg.Validate(); err != nil {
-		return fmt.Errorf("%w: %v", errUsage, err)
+		return usageMsg("invalid configuration: "+err.Error(), "設定が正しくありません: "+err.Error())
 	}
 	hc, err := agent.NewHTTPClient(cfg.CAFile)
 	if err != nil {
-		return fmt.Errorf("%w: %v", errUsage, err)
+		return usageMsg("invalid configuration: "+err.Error(), "設定が正しくありません: "+err.Error())
 	}
 	holder := &enforce.Holder{}
 	ag, err := agent.New(acfg, st, al, holder, clk, hc, log, stats)
 	if err != nil {
-		return fmt.Errorf("%w: %v", errUsage, err)
+		return usageMsg("invalid configuration: "+err.Error(), "設定が正しくありません: "+err.Error())
 	}
 	if err := ag.Boot(); err != nil {
-		return err
+		return msg("cannot start: "+err.Error(), "起動できません: "+err.Error())
 	}
 	snap := ag.Snapshot()
-	log.Info("booted", "state", string(snap.State), "applied_version", snap.AppliedVersion)
+	say(log, slog.LevelInfo, evBooted, "state", string(snap.State), "applied_version", snap.AppliedVersion)
 
 	ln, err := net.Listen("tcp", cfg.Listen)
 	if err != nil {
-		return fmt.Errorf("listen: %w", err)
+		return listenErr("listen", err)
 	}
 	// The local read-only listener (P-09): bound before anything is served, so
 	// a bad address stops the proxy at start.
@@ -238,7 +291,7 @@ func runLocal(ctx context.Context, args []string, stderr io.Writer, ready, local
 		lln, err = net.Listen("tcp", cfg.MetricsListen)
 		if err != nil {
 			ln.Close()
-			return fmt.Errorf("metrics_listen: %w", err)
+			return listenErr("metrics_listen", err)
 		}
 		lsrv = &http.Server{
 			Handler:           newLocalHandler(cfg.Tenant, cfg.ProxyID, ag.Snapshot, stats),
@@ -255,7 +308,7 @@ func runLocal(ctx context.Context, args []string, stderr io.Writer, ready, local
 		if localReady != nil {
 			localReady(lln.Addr().String())
 		}
-		log.Info("local listener", "addr", lln.Addr().String())
+		say(log, slog.LevelInfo, evLocalListener, "addr", lln.Addr().String())
 	}
 
 	agentCtx, stopAgent := context.WithCancel(ctx)
@@ -264,14 +317,17 @@ func runLocal(ctx context.Context, args []string, stderr io.Writer, ready, local
 	if ready != nil {
 		ready(ln.Addr().String())
 	}
-	log.Info("listening", "addr", ln.Addr().String())
+	say(log, slog.LevelInfo, evListening, "addr", ln.Addr().String())
 
 	var runErr error
 	select {
 	case <-ctx.Done():
 	case err := <-serveErr:
-		runErr = fmt.Errorf("listener: %w", err)
+		if !errors.Is(err, http.ErrServerClosed) {
+			runErr = msg("a listener failed: "+err.Error(), "待ち受けが失敗しました: "+err.Error())
+		}
 	}
+	say(log, slog.LevelInfo, evShuttingDown)
 	sctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(sctx); err != nil {
@@ -284,12 +340,21 @@ func runLocal(ctx context.Context, args []string, stderr io.Writer, ready, local
 	}
 	stopAgent()
 	if err := <-agentDone; err != nil {
-		log.Error("shutdown: high-water not saved", "err", err)
+		say(log, slog.LevelError, evHighWaterLost, "err", err.Error())
 	}
-	if errors.Is(runErr, http.ErrServerClosed) {
-		runErr = nil
-	}
+	say(log, slog.LevelInfo, evStopped)
 	return runErr
+}
+
+// listenErr says that an address cannot be bound. It names the config key and
+// the system's reason, not the address.
+func listenErr(key string, err error) error {
+	reason := err.Error()
+	var oe *net.OpError
+	if errors.As(err, &oe) && oe.Err != nil {
+		reason = oe.Err.Error()
+	}
+	return msg("cannot listen for "+key+": "+reason, key+" の待ち受けを開始できません: "+reason)
 }
 
 // noteTestOnlyKeys warns loudly, and counts, when a trusted key is a public
@@ -300,7 +365,6 @@ func noteTestOnlyKeys(cfg *Config, stats *agent.Stats, log *slog.Logger) {
 		stats.Inc(metricTestOnlyKey)
 	}
 	if n > 0 {
-		log.Warn("TEST-ONLY KEY TRUSTED: a trusted key is a public fixture key; anyone can sign policies. Do not use outside tests.",
-			"test_only_keys", n)
+		say(log, slog.LevelWarn, evTestOnlyKey, "test_only_keys", n)
 	}
 }
