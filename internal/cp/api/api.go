@@ -17,6 +17,20 @@
 //     timeline response carries the per-proxy counts in
 //     wire.TimelineView.Dropped (proxy ID -> entries dropped; left out when
 //     none), so evidence export can say "N earlier entries dropped".
+//   - Metrics (all labels are validated IDs or fixed words, never free text):
+//     kairan_cp_polls_total{result}, kairan_cp_status_total{result},
+//     kairan_cp_auth_failures_total{code} (401 and 403 on every path),
+//     kairan_cp_active_polls, kairan_cp_enrolled_proxies{tenant},
+//     kairan_cp_timeline_dropped_total{tenant}, and
+//     kairan_cp_publish_rejected_total{tenant,code} (M-D64): one count for each
+//     publish the CP refuses after authentication (bad signature, threshold,
+//     wrong tenant, same version, malformed or oversize body, payload type,
+//     internal). code is the wire error code with "_" written "-" (for example
+//     threshold-not-met), because obs label values are wire.IDs. tenant is
+//     the payload's tenant only if the CP knows it (an admin key set or an
+//     enrolled proxy); a body that does not parse, or a tenant it does not
+//     know, is counted under tenant="unknown", so an attacker cannot add
+//     labels.
 //   - Errors are wire.ErrorResponse codes and nothing else; input is never
 //     echoed. Logs and metrics carry validated IDs only.
 //   - A proxy's group and tenant come from the enrollment registry, never from
@@ -112,6 +126,7 @@ type Server struct {
 	page        http.Handler
 
 	polls, status, authFail *obs.Counter
+	rejected                *obs.Counter // publish refusals
 	active                  *obs.Gauge
 
 	rmu sync.Mutex // serializes rollout read-modify-write
@@ -198,6 +213,7 @@ func New(cfg Config, st store.Store, clk clock.Clock, log *slog.Logger, m *obs.R
 	s.polls = m.Counter("kairan_cp_polls_total", "Long-poll requests answered, by result.", "result")
 	s.status = m.Counter("kairan_cp_status_total", "Status reports received, by result.", "result")
 	s.authFail = m.Counter("kairan_cp_auth_failures_total", "Requests refused by authentication, by wire error code.", "code")
+	s.rejected = m.Counter("kairan_cp_publish_rejected_total", "Publishes refused, by tenant (or unknown) and wire error code with _ written -.", "tenant", "code")
 	s.active = m.Gauge("kairan_cp_active_polls", "Long-polls currently held.")
 	s.active.With().Set(0)
 	dropped := m.Counter("kairan_cp_timeline_dropped_total", "Oldest timeline entries dropped at the per-proxy cap, by tenant.", "tenant")
@@ -435,88 +451,100 @@ func readBody(w http.ResponseWriter, r *http.Request, limit int64, v any) bool {
 // readEnvelope reads one signed envelope of at most wire.MaxEnvelopeBytes with
 // trust.DecodeEnvelope, the decoder proxies use (Q-D20): beside the rules of
 // readBody it rejects a duplicate key and a key that is not spelled exactly
-// ("Payload" for "payload"), which encoding/json would accept. It writes the
-// error response itself when it fails.
-func readEnvelope(w http.ResponseWriter, r *http.Request) (wire.Envelope, bool) {
+// ("Payload" for "payload"), which encoding/json would accept. On failure it
+// returns the HTTP status and wire code to answer with, and writes nothing.
+func readEnvelope(w http.ResponseWriter, r *http.Request) (env wire.Envelope, status int, code wire.ErrorCode) {
 	if r.ContentLength > wire.MaxEnvelopeBytes {
-		writeErr(w, http.StatusRequestEntityTooLarge, wire.ErrTooLarge)
-		return wire.Envelope{}, false
+		return wire.Envelope{}, http.StatusRequestEntityTooLarge, wire.ErrTooLarge
 	}
 	// One byte of slack lets DecodeEnvelope see the overflow and say so.
 	b, err := io.ReadAll(http.MaxBytesReader(w, r.Body, wire.MaxEnvelopeBytes+1))
 	if err != nil {
 		var tooBig *http.MaxBytesError
 		if errors.As(err, &tooBig) {
-			writeErr(w, http.StatusRequestEntityTooLarge, wire.ErrTooLarge)
-		} else {
-			writeErr(w, http.StatusBadRequest, wire.ErrBadRequest)
+			return wire.Envelope{}, http.StatusRequestEntityTooLarge, wire.ErrTooLarge
 		}
-		return wire.Envelope{}, false
+		return wire.Envelope{}, http.StatusBadRequest, wire.ErrBadRequest
 	}
-	env, err := trust.DecodeEnvelope(b)
+	env, err = trust.DecodeEnvelope(b)
 	switch {
 	case err == nil:
-		return env, true
+		return env, 0, ""
 	case errors.Is(err, wire.ErrBodyTooLarge):
-		writeErr(w, http.StatusRequestEntityTooLarge, wire.ErrTooLarge)
-	default:
-		writeErr(w, http.StatusBadRequest, wire.ErrBadRequest)
+		return wire.Envelope{}, http.StatusRequestEntityTooLarge, wire.ErrTooLarge
 	}
-	return wire.Envelope{}, false
+	return wire.Envelope{}, http.StatusBadRequest, wire.ErrBadRequest
 }
 
 // ---- publish ----
 
+// unknownTenant labels a rejected publish whose tenant is not known, so that
+// no attacker-chosen text becomes a label (I4, M-D64).
+const unknownTenant wire.ID = "unknown"
+
+// rejectPublish counts one refused publish and answers it. The tenant label is
+// the payload's tenant only when the CP knows that tenant (an admin key set or
+// an enrolled proxy); otherwise it is unknownTenant. The code label is the wire
+// error code with "_" written "-", since label values are wire.IDs (obs).
+func (s *Server) rejectPublish(w http.ResponseWriter, tenant wire.ID, status int, code wire.ErrorCode) {
+	if !s.tenants[tenant] {
+		tenant = unknownTenant
+	}
+	s.rejected.With(tenant, wire.ID(strings.ReplaceAll(string(code), "_", "-"))).Inc()
+	writeErr(w, status, code)
+}
+
 func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
-	env, ok := readEnvelope(w, r)
-	if !ok {
+	env, status, code := readEnvelope(w, r)
+	if code != "" {
+		s.rejectPublish(w, "", status, code)
 		return
 	}
 	switch {
 	case env.PayloadType != wire.PayloadTypePolicy:
-		writeErr(w, http.StatusBadRequest, wire.ErrPayloadType)
+		s.rejectPublish(w, "", http.StatusBadRequest, wire.ErrPayloadType)
 		return
 	case env.ValidateShape() != nil:
-		writeErr(w, http.StatusBadRequest, wire.ErrMalformed)
+		s.rejectPublish(w, "", http.StatusBadRequest, wire.ErrMalformed)
 		return
 	}
 	// The tenant comes from the payload; its root decides who may publish.
 	// This is a sanity check: proxies are the judges (I1).
 	pol, err := policy.Parse(env.Payload)
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, wire.ErrMalformed)
+		s.rejectPublish(w, "", http.StatusBadRequest, wire.ErrMalformed)
 		return
 	}
 	root, ok := s.roots[pol.Tenant]
 	if !ok {
-		writeErr(w, http.StatusBadRequest, wire.ErrWrongTenant)
+		s.rejectPublish(w, pol.Tenant, http.StatusBadRequest, wire.ErrWrongTenant)
 		return
 	}
 	v, code, err := trust.Verify(env, root)
 	if err != nil {
 		if errors.Is(err, trust.ErrBadRoot) {
 			s.log.Error("publish: admin keys for tenant are below the trust floor", obs.Tenant(pol.Tenant))
-			writeErr(w, http.StatusInternalServerError, wire.ErrInternal)
+			s.rejectPublish(w, pol.Tenant, http.StatusInternalServerError, wire.ErrInternal)
 			return
 		}
 		if !code.Valid() {
 			code = wire.ErrMalformed
 		}
-		writeErr(w, http.StatusBadRequest, code)
+		s.rejectPublish(w, pol.Tenant, http.StatusBadRequest, code)
 		return
 	}
 	meta := store.EnvelopeMeta{Tenant: v.Policy.Tenant, Version: v.Policy.Version, Hash: v.Hash}
 	switch err := s.st.PutEnvelope(env, meta); {
 	case err == nil:
 	case errors.Is(err, store.ErrConflict):
-		writeErr(w, http.StatusConflict, wire.ErrConflict)
+		s.rejectPublish(w, meta.Tenant, http.StatusConflict, wire.ErrConflict)
 		return
 	case errors.Is(err, wire.ErrInvalid):
-		writeErr(w, http.StatusBadRequest, wire.ErrMalformed)
+		s.rejectPublish(w, meta.Tenant, http.StatusBadRequest, wire.ErrMalformed)
 		return
 	default:
 		s.log.Error("publish: store failed", obs.Tenant(meta.Tenant))
-		writeErr(w, http.StatusInternalServerError, wire.ErrInternal)
+		s.rejectPublish(w, meta.Tenant, http.StatusInternalServerError, wire.ErrInternal)
 		return
 	}
 	s.log.Info("policy published", obs.Tenant(meta.Tenant), slog.Uint64("version", meta.Version))
