@@ -170,6 +170,12 @@ func adminToken(s streams, file string) (string, *cliError) {
 // no body is expected). It returns the HTTP status; for a non-2xx answer the
 // error says what the control plane said, in words, never its bytes.
 func (c *cpClient) do(method, path string, query url.Values, body []byte, out any) (int, *cliError) {
+	return c.doChecked(method, path, query, body, out, nil)
+}
+
+// doChecked is do with an extra look at the raw 2xx answer: if check is not
+// nil and returns false, the answer is refused like any other malformed one.
+func (c *cpClient) doChecked(method, path string, query url.Values, body []byte, out any, check func([]byte) bool) (int, *cliError) {
 	u := *c.base
 	u.Path = path
 	u.RawQuery = query.Encode()
@@ -200,7 +206,14 @@ func (c *cpClient) do(method, path string, query url.Values, body []byte, out an
 	if out == nil {
 		return resp.StatusCode, nil
 	}
-	if err := wire.Decode(resp.Body, maxViewBytes, out); err != nil {
+	data, rerr := io.ReadAll(io.LimitReader(resp.Body, maxViewBytes+1))
+	if rerr == nil && check != nil && int64(len(data)) <= maxViewBytes && !check(data) {
+		rerr = wire.ErrBodyInvalid
+	}
+	if rerr == nil {
+		rerr = wire.Decode(bytes.NewReader(data), maxViewBytes, out)
+	}
+	if rerr != nil {
 		return resp.StatusCode, fail("the control plane sent an answer that does not match the expected format; it was not used",
 			"コントロールプレーンの応答が想定した形式ではないため、使用しませんでした")
 	}
