@@ -89,6 +89,38 @@ func englishArg(e ast.Expr) bool {
 	return true
 }
 
+// madeByEsc is true when every assignment to name inside fd takes its value
+// from a call of esc, and there is at least one. A parameter of that name
+// does not count.
+func madeByEsc(fd *ast.FuncDecl, name string) bool {
+	found, ok := false, true
+	ast.Inspect(fd.Body, func(n ast.Node) bool {
+		as, isAs := n.(*ast.AssignStmt)
+		if !isAs || len(as.Lhs) != len(as.Rhs) {
+			return true
+		}
+		for i, l := range as.Lhs {
+			if id, isID := l.(*ast.Ident); isID && id.Name == name {
+				found = true
+				usesEsc := false
+				ast.Inspect(as.Rhs[i], func(n ast.Node) bool {
+					if c, isCall := n.(*ast.CallExpr); isCall {
+						if f, isID := c.Fun.(*ast.Ident); isID && f.Name == "esc" {
+							usesEsc = true
+						}
+					}
+					return true
+				})
+				if !usesEsc {
+					ok = false
+				}
+			}
+		}
+		return true
+	})
+	return found && ok
+}
+
 func TestEveryMessagePathInTheSourceIsBilingual(t *testing.T) {
 	files, err := filepath.Glob("*.go")
 	if err != nil {
@@ -98,8 +130,20 @@ func TestEveryMessagePathInTheSourceIsBilingual(t *testing.T) {
 	pairs := map[string][][2]int{
 		"msg":           {{0, 1}},
 		"fail":          {{0, 1}},
+		"osMsg":         {{0, 1}},
 		"readSmallFile": {{2, 3}, {4, 5}},
 	}
+	// M-D65 (Q-D36..Q-D38): no message holds a configured path or value, or
+	// library text. .Error() is allowed only where the text is made safe.
+	errorCallers := map[string]bool{"errText": true, "flagError": true, "decodeError": true, "corruptFile": true, "Error": true}
+	// identifiers that hold a configured path, address, token or other value
+	valueNames := map[string]bool{
+		"path": true, "dir": true, "cfgPath": true, "flagFile": true, "DataDir": true, "Listen": true,
+		"MetricsListen": true, "TLSCertFile": true, "TLSKeyFile": true, "reason": true, "raw": true,
+		"tok": true, "token": true, "addr": true,
+	}
+	// identifiers that hold text the person typed: each must be made by esc
+	typedNames := map[string]bool{"f": true, "file": true, "name": true, "field": true, "flag": true}
 	// the only functions allowed to write to stdout or stderr
 	printers := map[string]bool{"report": true, "run": true}
 	calls := map[string]int{}
@@ -132,6 +176,35 @@ func TestEveryMessagePathInTheSourceIsBilingual(t *testing.T) {
 								continue
 							}
 							calls[fn.Name]++
+							for _, arg := range []ast.Expr{call.Args[p[0]], call.Args[p[1]]} {
+								ast.Inspect(arg, func(n ast.Node) bool {
+									switch n := n.(type) {
+									case *ast.Ident:
+										if valueNames[n.Name] {
+											t.Errorf("%s: %s: a message names a configured value (%s)", pos, fn.Name, n.Name)
+										}
+										if typedNames[n.Name] && !madeByEsc(fd, n.Name) {
+											t.Errorf("%s: %s: %s holds typed text that was not made by esc", pos, fn.Name, n.Name)
+										}
+									case *ast.CallExpr:
+										if se, ok := n.Fun.(*ast.SelectorExpr); ok && se.Sel.Name == "Error" {
+											t.Errorf("%s: %s: err.Error() in a message: use osMsg(en, ja, err)", pos, fn.Name)
+										}
+										if id, ok := n.Fun.(*ast.Ident); ok && id.Name == "short" {
+											t.Errorf("%s: %s: short() echoes raw text: use esc", pos, fn.Name)
+										}
+									}
+									return true
+								})
+							}
+							if fd.Name.Name != "osMsg" {
+								ast.Inspect(call.Args[p[1]], func(n ast.Node) bool {
+									if id, ok := n.(*ast.Ident); ok && (id.Name == "err" || id.Name == "reason") {
+										t.Errorf("%s: %s: the Japanese text holds %s: library text must not reach the Japanese line", pos, fn.Name, id.Name)
+									}
+									return true
+								})
+							}
 							if !englishArg(call.Args[p[0]]) {
 								t.Errorf("%s: %s: English text holds Japanese or other non-ASCII", pos, fn.Name)
 							}
@@ -144,6 +217,9 @@ func TestEveryMessagePathInTheSourceIsBilingual(t *testing.T) {
 						t.Errorf("%s: %s writes an English-only message", pos, fn.Name)
 					}
 				case *ast.SelectorExpr:
+					if fn.Sel.Name == "Error" && len(call.Args) == 0 && !errorCallers[fd.Name.Name] {
+						t.Errorf("%s: .Error() in %s: error text can hold a path or a value; use errText(err)", pos, fd.Name.Name)
+					}
 					x, _ := fn.X.(*ast.Ident)
 					if x == nil {
 						return true
@@ -176,6 +252,8 @@ func TestEveryMessagePathInTheSourceIsBilingual(t *testing.T) {
 						}
 					case x.Name == "os" && (fn.Sel.Name == "Exit") && fd.Name.Name != "main":
 						t.Errorf("%s: os.Exit outside main", pos)
+					case x.Name == "fmt" && fn.Sel.Name == "Errorf":
+						t.Errorf("%s: fmt.Errorf makes an English-only error: use msg(en, ja)", pos)
 					}
 				}
 				return true
@@ -192,7 +270,7 @@ func TestEveryMessagePathInTheSourceIsBilingual(t *testing.T) {
 		}
 	}
 	// the scan must really see the code it guards
-	if calls["msg"] < 40 || calls["fail"] < 10 || calls["readSmallFile"] == 0 || calls["Fprint"] < 3 {
+	if calls["msg"] < 40 || calls["fail"] < 10 || calls["readSmallFile"] == 0 || calls["Fprint"] < 3 || calls["osMsg"] < 4 {
 		t.Errorf("the scan saw too little code: %v", calls)
 	}
 }
