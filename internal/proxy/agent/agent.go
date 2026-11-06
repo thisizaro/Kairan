@@ -188,13 +188,13 @@ func (a *Agent) Boot() error {
 		lv.AppliedVer, lv.AppliedHash = a.al.LastApplied()
 	}
 	dec := store.DecideBoot(stored, lv, now)
-	a.log.Info("boot", "reason", dec.Reason)
+	say(a.log, slog.LevelInfo, evBoot, "reason", dec.Reason)
 
 	ev := dec.Event
 	if dec.Repair {
 		if _, err := a.al.Append(applylog.Entry{From: lv.AppliedVer, To: stored.Checked.Version, Hash: stored.Checked.Hash}); err != nil {
 			// The log cannot record what is on disk: refuse to enforce it.
-			a.log.Error("boot: repair entry not written; staying tampered", "err", err)
+			say(a.log, slog.LevelError, evRepairNotWritten, "err", err)
 			ev = state.BootTampered
 		}
 	}
