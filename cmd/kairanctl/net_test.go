@@ -444,7 +444,7 @@ func TestPublishServerAnswers(t *testing.T) {
 		},
 		"redirect": func(f *fakeCP) {
 			f.publish = func(w http.ResponseWriter, _ wire.Envelope, _ []byte) {
-				http.Redirect(w, &http.Request{}, "http://127.0.0.1:1/evil", 307)
+				http.Redirect(w, &http.Request{}, "http://127.0.0.1:1/evil", http.StatusTemporaryRedirect)
 			}
 		},
 	} {
