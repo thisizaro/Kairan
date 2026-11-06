@@ -86,7 +86,7 @@ func TestRecordRefusesRecordsThatDoNotFit(t *testing.T) {
 		{"tool with quote", bad(func(r *enforce.Record) { r.Tool = `a"b` })},
 		{"tool with slash that is not tools/list", bad(func(r *enforce.Record) { r.Tool = "tools/call" })},
 		{"tool too long 129", bad(func(r *enforce.Record) { r.Tool = strings.Repeat("a", 129) })},
-		{"tool unicode", bad(func(r *enforce.Record) { r.Tool = "crm.read​_contact" })},
+		{"tool unicode", bad(func(r *enforce.Record) { r.Tool = "crm.read\u200b_contact" })},
 		{"tool NUL", bad(func(r *enforce.Record) { r.Tool = "a\x00b" })},
 		{"role newline", bad(func(r *enforce.Record) { r.Role = "sales\nroot" })},
 		{"role quote", bad(func(r *enforce.Record) { r.Role = `sa"les` })},

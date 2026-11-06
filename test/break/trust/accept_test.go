@@ -324,7 +324,7 @@ func TestTenantAttacks(t *testing.T) {
 	}
 	// Homoglyph / case / padding variants of the right tenant must not match: they
 	// are either malformed (not a wire.ID) or wrong_tenant, never accepted.
-	for _, tn := range []string{"BANK-A", "bank-a ", " bank-a", "bank-a​", "bаnk-a" /* cyrillic a */, "bank-a\x00", "bank‐a", "ｂank-a"} {
+	for _, tn := range []string{"BANK-A", "bank-a ", " bank-a", "bank-a\u200b", "bаnk-a" /* cyrillic a */, "bank-a\x00", "bank‐a", "ｂank-a"} {
 		e := signed(pol{tenant: tn}.bytes(), k.a, k.b)
 		v, code, err := trust.Accept(e, root, 1, now, skew)
 		if err == nil || v.Policy != nil || (code != wire.ErrMalformed && code != wire.ErrWrongTenant) {

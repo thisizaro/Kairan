@@ -157,7 +157,7 @@ func TestUnknownEventsAndStatesChangeNothing(t *testing.T) {
 			}
 		}
 	}
-	badStates := []wire.ProxyState{"", "bogus", "ENFORCING", "Enforcing", "enforcing ", " enforcing", "enforcing\x00", "safe-mode", "SafeMode", "deny-all", "tampered\n", "enforcing​", "\xff"}
+	badStates := []wire.ProxyState{"", "bogus", "ENFORCING", "Enforcing", "enforcing ", " enforcing", "enforcing\x00", "safe-mode", "SafeMode", "deny-all", "tampered\n", "enforcing\u200b", "\xff"}
 	for _, s := range badStates {
 		for _, e := range append(append([]state.Event{}, allEvents...), badEvents...) {
 			got := state.Next(s, e)
@@ -345,7 +345,7 @@ func TestParseSafeMode(t *testing.T) {
 	bad := []string{
 		"READ_ONLY", "Read_Only", "read_only ", " read_only", "read_only\n", "read_only\x00", "read-only", "readonly",
 		"deny_all ", "DENY_ALL", "Deny_All", "deny-all", "denyall", "deny", "allow", "allow_all", "all", "off", "none",
-		"*", "true", "false", "0", "1", "null", "read_only,deny_all", "read_only;", "​read_only", "read_onlý",
+		"*", "true", "false", "0", "1", "null", "read_only,deny_all", "read_only;", "\u200bread_only", "read_onlý",
 		"rеad_only", // Cyrillic e
 		"\xff", "read_only\r\n", "%72ead_only",
 	}
