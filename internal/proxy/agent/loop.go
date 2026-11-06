@@ -209,11 +209,7 @@ func (a *Agent) pollOnce(ctx context.Context) time.Duration {
 func (a *Agent) onPollBody(body io.Reader) time.Duration {
 	version, env, err := decodePoll(body)
 	if err != nil {
-		var from uint64
-		if a.al != nil {
-			from, _ = a.al.LastApplied()
-		}
-		a.reject(wire.ErrMalformed, 0, "", from)
+		a.reject(wire.ErrMalformed, 0, "", a.lastApplied())
 		return a.rejectDelay()
 	}
 	if a.apply(env, version) {
@@ -261,8 +257,8 @@ func errKind(err error) string {
 func (a *Agent) report() wire.StatusReport {
 	var seq uint64
 	var head wire.Hash
-	if a.al != nil {
-		seq, head = a.al.Head()
+	if al := a.alog(); al != nil {
+		seq, head = al.Head()
 	}
 	untrusted := a.cfg.Guard.Untrusted()
 	a.mu.Lock()

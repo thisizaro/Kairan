@@ -166,6 +166,7 @@ func importBundle(cfg *Config, file string, stderr io.Writer) error {
 	acfg := agent.Config{
 		CP: cfg.CP, Tenant: cfg.Tenant, ProxyID: cfg.ProxyID, Token: cfg.Token, Root: cfg.Root,
 		Skew: cfg.Skew, Guard: guard, AllowPlaintext: cfg.AllowPlaintext, LogOpenErr: logErr,
+		LogPath: filepath.Join(cfg.DataDir, applyLogFile),
 	}
 	// The client is never used: an import makes no network call.
 	ag, err := agent.New(acfg, st, al, &enforce.Holder{}, clk, &http.Client{}, log, &agent.Stats{})

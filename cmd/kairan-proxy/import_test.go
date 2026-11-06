@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"encoding/json"
 	"errors"
@@ -221,22 +222,49 @@ func TestImportOldVersionKeepsPolicy(t *testing.T) {
 	}
 }
 
-// An apply log that fails verification stops an import: nothing is applied
-// into a tampered data directory.
-func TestImportIntoTamperedDataDir(t *testing.T) {
+// An apply log that fails verification does not stop an import of a newer
+// valid policy: the broken log is kept as evidence, a new chain starts, and the
+// policy is applied (P-13, M-D64). Anything that does not pass the checks
+// changes nothing.
+func TestImportIntoBrokenLogRecovers(t *testing.T) {
 	w := newWorld(t)
-	if err := os.MkdirAll(w.cfg["data_dir"].(string), 0o700); err != nil {
+	dir := w.cfg["data_dir"].(string)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(w.cfg["data_dir"].(string), "apply.log"), []byte("garbage\n"), 0o600); err != nil {
+	logFile := filepath.Join(dir, "apply.log")
+	garbage := []byte("garbage\n")
+	if err := os.WriteFile(logFile, garbage, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	out, err := w.runImport(w.bundleFile("good.json", w.bundle("bank-a", 3, time.Hour, w.keys[0], w.keys[1])))
+	// A bundle that fails the checks touches nothing.
+	out, err := w.runImport(w.bundleFile("weak.json", w.bundle("bank-a", 3, time.Hour, w.keys[0])))
 	if err == nil || errors.Is(err, errUsage) || !japanese.MatchString(err.Error()+out) {
 		t.Fatalf("err = %v, out = %q", err, out)
 	}
+	if got, _ := os.ReadFile(logFile); !bytes.Equal(got, garbage) {
+		t.Fatal("the broken log was changed by a rejected bundle")
+	}
+	if _, statErr := os.Stat(logFile + ".broken-1"); statErr == nil {
+		t.Fatal("a reset happened for a rejected bundle")
+	}
 	if _, statErr := os.Stat(w.policyFile()); statErr == nil {
 		t.Fatal("a policy was saved")
+	}
+	// A valid bundle recovers.
+	out, err = w.runImport(w.bundleFile("good.json", w.bundle("bank-a", 3, time.Hour, w.keys[0], w.keys[1])))
+	if err != nil {
+		t.Fatalf("import: %v\n%s", err, out)
+	}
+	if kept, _ := os.ReadFile(logFile + ".broken-1"); !bytes.Equal(kept, garbage) {
+		t.Fatal("the broken log was not kept byte for byte")
+	}
+	es := w.applyEntries()
+	if len(es) != 2 || es[0].Reset.File != "apply.log.broken-1" || es[1].To != 3 || es[1].Result != "" {
+		t.Fatalf("apply log = %+v", es)
+	}
+	if _, statErr := os.Stat(w.policyFile()); statErr != nil {
+		t.Fatal("the policy was not saved")
 	}
 }
 

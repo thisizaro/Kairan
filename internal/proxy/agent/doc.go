@@ -45,6 +45,32 @@
 // that resends one bad envelope cannot fill the disk; the rejected counter
 // still counts each one.
 //
+// # A broken apply log (P-13, M-D64)
+//
+// If the apply log fails verification (edited by hand, truncated, garbage
+// appended) the proxy boots Tampered and deny-all, as before, and reports it.
+// It leaves that state the way ARCHITECTURE section 4 says: on a newer valid
+// policy, from the control plane or from an import. "Newer" means above the
+// floor, the larger of the highest version applied in the verifiable part of
+// the broken log and the stored policy if it passes Verify; the same or an
+// older version is rejected (not_newer) and changes nothing. When such a
+// policy has passed trust.Accept, and before Save, the agent calls
+// applylog.Reset on Config.LogPath: the broken file is kept as
+// apply.log.broken-<n> (never deleted or overwritten) and a new hash chain
+// starts with a reset entry (format in package applylog). Then Save, Append,
+// the Holder swap and Enforcing follow as usual. The reset is reported:
+// agent_apply_log_reset counts it, a warning line in English and Japanese
+// names the kept file, the old seq and the reason, and the next status report
+// carries last_error "tampered" with the applied version (the existing code;
+// no new wire code) until the next successful apply, together with the new,
+// smaller log_seq and log_head. If the reset fails, or LogPath is empty,
+// nothing is applied (persist_failed). A log that holds only a reset entry (a
+// crash fell between the reset and the first apply) boots Tampered, even if
+// the stored policy is valid, and recovers on the next newer offer without a
+// second reset. The caller holds the data directory lock for the agent's whole
+// life; a reset happens inside it. An edit made while the proxy is running is
+// noticed at the next start, not before.
+//
 // # Offline import (P-11, PRD J3)
 //
 // Import(data) applies one JSON-encoded envelope from a file after Boot, with
@@ -52,7 +78,8 @@
 // is not an envelope is code malformed), then the same apply path as above.
 // It returns Imported (version, previous, hash) or an *ImportError carrying
 // the wire code. A rejection keeps the policy in force, is counted, and is
-// written to the apply log. The caller saves the clock guard afterwards.
+// written to the apply log. An import into a broken apply log follows the rule
+// above. The caller saves the clock guard afterwards.
 //
 // # Poll loop
 //

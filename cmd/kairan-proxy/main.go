@@ -55,7 +55,16 @@
 //
 // An apply log that fails verification, or a decision log that cannot be
 // opened, is not worked around: a bad apply log makes the proxy Tampered
-// (deny-all, nothing applied), an unwritable decision log stops the proxy.
+// (deny-all, nothing enforced), an unwritable decision log stops the proxy.
+// The file is never edited. A newer valid policy (above everything the
+// verifiable part of the log and the stored policy show as applied), from the
+// control plane or from -import, takes the proxy out of Tampered: the broken
+// log is kept as apply.log.broken-<n> in data_dir (never deleted or
+// overwritten), a new chain starts with a reset entry that records the old
+// head, and the proxy enforces the new policy. The reset is counted
+// (kairan_proxy_apply_log_resets_total), logged in English and Japanese, and
+// reported to the control plane as last_error "tampered" with a smaller
+// log_seq. The old chain can be checked only by hand, on the kept file.
 //
 // If a trusted key is one of the repository's TEST-ONLY fixture keys, the
 // proxy logs a loud warning at start and counts it (test_only_trusted_key).
@@ -107,7 +116,8 @@
 // written to the apply log with its reason. A bundle file that is not a
 // regular file (a FIFO, a device, a directory) or is larger than an envelope
 // may be is refused before it is read. An apply log that fails verification
-// means nothing is imported. The result is printed in English and Japanese on
+// does not stop an import of a newer valid policy: it recovers as described
+// under Boot and run, and a bundle that fails the checks changes nothing. The result is printed in English and Japanese on
 // standard error; nothing from the bundle is printed. A proxy that starts
 // afterwards enforces the imported policy from disk; an import does not
 // change a proxy that is already running.
@@ -253,6 +263,7 @@ func runLocal(ctx context.Context, args []string, stderr io.Writer, ready, local
 	acfg := agent.Config{
 		CP: cfg.CP, Tenant: cfg.Tenant, ProxyID: cfg.ProxyID, Token: cfg.Token, Root: cfg.Root,
 		Skew: cfg.Skew, Guard: guard, AllowPlaintext: cfg.AllowPlaintext, LogOpenErr: logErr,
+		LogPath: filepath.Join(cfg.DataDir, applyLogFile),
 	}
 	dl, err := declog.Open(filepath.Join(cfg.DataDir, decisionLogFile), declog.Options{Metrics: stats})
 	if err != nil {

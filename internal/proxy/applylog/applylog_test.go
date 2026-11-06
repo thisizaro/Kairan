@@ -401,6 +401,9 @@ func TestEncodeDecodeRoundTrip(t *testing.T) {
 func FuzzDecode(f *testing.F) {
 	f.Add(Encode(Entry{Seq: 1, Time: t0, To: 1, Hash: h('a'), Self: h('b')}))
 	f.Add(Encode(Entry{Seq: 2, Time: t0, From: 1, To: 2, Hash: h('a'), Result: wire.ErrThreshold, Prev: h('b'), Self: h('c')}))
+	f.Add(Encode(Entry{Seq: 1, Time: t0, From: 3, Hash: h('a'), Result: wire.ErrTampered, Self: h('b'),
+		Reset: ResetInfo{Seq: 5, File: "apply.log.broken-1", Reason: ReasonChainBroken}}))
+	f.Add([]byte(`{"seq":1,"time":"2026-11-05T12:00:00Z","from":0,"to":0,"hash":"","result":"tampered","reset":{},"prev":"","self":""}`))
 	f.Add([]byte(`{"seq":1}`))
 	f.Add([]byte(`{"seq":1,"seq":2}`))
 	f.Add([]byte(`{"Seq":1,"time":"2026-11-05T12:00:00+02:00"}`))
