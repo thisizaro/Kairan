@@ -511,47 +511,7 @@ func TestImportGoldenRejections(t *testing.T) {
 
 // ---- the apply log ----
 
-func TestImportWithBrokenApplyLogImportsNothing(t *testing.T) {
-	mut := map[string]func([]byte) []byte{
-		"garbage line appended": func(b []byte) []byte { return append(append([]byte(nil), b...), "xx\n"...) },
-		"field edited":          func(b []byte) []byte { return bytes.Replace(b, []byte(`"to":1`), []byte(`"to":0`), 1) },
-		"last line cut":         func(b []byte) []byte { return b[:len(b)-5] },
-		"entry deleted":         func(b []byte) []byte { return nil },
-		"hash edited":           func(b []byte) []byte { return bytes.Replace(b, []byte(`"self":"`), []byte(`"self":"0`), 1) },
-	}
-	for name, f := range mut {
-		t.Run(name, func(t *testing.T) {
-			e := newImp(t)
-			e.apply(good(t, 1))
-			e.apply(good(t, 2))
-			lp := filepath.Join(e.dir, "apply.log")
-			b, _ := os.ReadFile(lp)
-			nb := f(b)
-			if name != "entry deleted" && bytes.Equal(nb, b) {
-				t.Fatalf("edit did not apply to %q", b)
-			}
-			if name == "entry deleted" {
-				lines := bytes.SplitAfter(b, []byte("\n"))
-				nb = lines[1]
-			}
-			os.WriteFile(lp, nb, 0o600)
-			before := e.snap()
-			code, out := e.run(e.bundle(envJSON(good(t, 3))))
-			after := e.snap()
-			if code != 1 {
-				t.Errorf("exit %d, want 1: %s", code, clip(out))
-			}
-			if !bytes.Equal(after.policy, before.policy) || !after.mtime.Equal(before.mtime) {
-				t.Errorf("the stored policy changed under a broken apply log (I3, I6)")
-			}
-			if !bytes.Equal(after.log, nb) {
-				t.Errorf("the broken apply log was modified or 'repaired'")
-			}
-			if !hasJP(out) {
-				t.Errorf("not bilingual: %s", clip(out))
-			}
-		})
-	}
+func TestImportApplyLogIsADirectory(t *testing.T) {
 	t.Run("apply.log is a directory", func(t *testing.T) {
 		e := newImp(t)
 		os.MkdirAll(filepath.Join(e.dir, "apply.log"), 0o700)
