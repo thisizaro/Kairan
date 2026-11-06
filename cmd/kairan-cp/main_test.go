@@ -19,7 +19,9 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -32,21 +34,72 @@ import (
 var binPath string
 
 // TestMain builds the real binary once; the process tests below run it.
+//
+// The binary lives in a fixed per-user cache directory, named by this
+// process's pid, never in a fresh random temp directory: a run that is killed
+// or crashes (test timeout, panic in a goroutine, SIGKILL) cannot clean up
+// after itself, and random directories then pile up (M-D68 G1 triage). A
+// fixed directory bounds the leak to one binary per dead run, and the next run
+// sweeps those away. Normal exit, panic in TestMain and SIGINT/SIGTERM remove
+// the binary at once.
 func TestMain(m *testing.M) {
-	dir, err := os.MkdirTemp("", "kairan-cp-bin-")
+	os.Exit(runMain(m))
+}
+
+func runMain(m *testing.M) int {
+	cache, err := os.UserCacheDir()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		cache = os.TempDir()
 	}
-	binPath = filepath.Join(dir, "kairan-cp")
+	dir := filepath.Join(cache, "kairan-test", "kairan-cp-bin")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	sweepStaleBinaries(dir)
+
+	binPath = filepath.Join(dir, fmt.Sprintf("kairan-cp.%d", os.Getpid()))
+	cleanup := func() { os.Remove(binPath) }
+	defer cleanup() // also runs when m.Run panics in this goroutine
+
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sig)
+	go func() {
+		if _, ok := <-sig; ok {
+			cleanup()
+			os.Exit(1)
+		}
+	}()
+
 	if out, err := exec.Command("go", "build", "-o", binPath, ".").CombinedOutput(); err != nil {
 		fmt.Fprintf(os.Stderr, "go build failed: %v\n%s", err, out)
-		os.RemoveAll(dir)
-		os.Exit(1)
+		return 1
 	}
-	code := m.Run()
-	os.RemoveAll(dir)
-	os.Exit(code)
+	return m.Run()
+}
+
+// sweepStaleBinaries removes kairan-cp.<pid> files left by runs that died
+// without cleaning up. A file whose pid is still alive is left alone.
+func sweepStaleBinaries(dir string) {
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range ents {
+		rest, ok := strings.CutPrefix(e.Name(), "kairan-cp.")
+		if !ok {
+			continue
+		}
+		pid, err := strconv.Atoi(rest)
+		if err != nil || pid <= 0 {
+			continue
+		}
+		if err := syscall.Kill(pid, 0); err == nil || err == syscall.EPERM {
+			continue // owner still running
+		}
+		os.Remove(filepath.Join(dir, e.Name()))
+	}
 }
 
 const (
