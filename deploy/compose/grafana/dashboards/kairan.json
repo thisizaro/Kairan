@@ -1,0 +1,474 @@
+{
+ "uid": "kairan-fleet",
+ "title": "Kairan fleet / 回覧 フリート",
+ "tags": [
+  "kairan",
+  "demo"
+ ],
+ "timezone": "browser",
+ "schemaVersion": 39,
+ "version": 1,
+ "refresh": "5s",
+ "time": {
+  "from": "now-15m",
+  "to": "now"
+ },
+ "panels": [
+  {
+   "id": 1,
+   "title": "Proxies up / 稼働中のプロキシ",
+   "type": "stat",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "kairan-prom"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 0,
+    "w": 4,
+    "h": 4
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "kairan-prom"
+     },
+     "expr": "count(up{job=\"kairan-proxy\"} == 1)",
+     "legendFormat": "up"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+   },
+   "options": {},
+   "description": "Real kairan-proxy containers scraped (10 expected). 実プロキシ。"
+  },
+  {
+   "id": 2,
+   "title": "Enforcing / 適用中",
+   "type": "stat",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "kairan-prom"
+   },
+   "gridPos": {
+    "x": 4,
+    "y": 0,
+    "w": 4,
+    "h": 4
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "kairan-prom"
+     },
+     "expr": "sum(kairan_proxy_state{state=\"enforcing\"})",
+     "legendFormat": "enforcing"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+   },
+   "options": {}
+  },
+  {
+   "id": 3,
+   "title": "Safe mode / セーフモード",
+   "type": "stat",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "kairan-prom"
+   },
+   "gridPos": {
+    "x": 8,
+    "y": 0,
+    "w": 4,
+    "h": 4
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "kairan-prom"
+     },
+     "expr": "sum(kairan_proxy_state{state=\"safe-mode\"})",
+     "legendFormat": "safe mode"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+   },
+   "options": {},
+   "description": "Policy expired: only R tools allowed."
+  },
+  {
+   "id": 4,
+   "title": "Deny-all / 全拒否",
+   "type": "stat",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "kairan-prom"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 0,
+    "w": 4,
+    "h": 4
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "kairan-prom"
+     },
+     "expr": "sum(kairan_proxy_state{state=\"deny-all\"})",
+     "legendFormat": "deny-all"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+   },
+   "options": {},
+   "description": "No valid policy."
+  },
+  {
+   "id": 5,
+   "title": "Tampered / 改ざん検知",
+   "type": "stat",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "kairan-prom"
+   },
+   "gridPos": {
+    "x": 16,
+    "y": 0,
+    "w": 4,
+    "h": 4
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "kairan-prom"
+     },
+     "expr": "sum(kairan_proxy_state{state=\"tampered\"})",
+     "legendFormat": "tampered"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+   },
+   "options": {}
+  },
+  {
+   "id": 6,
+   "title": "Polls held by CP / CPが保持中のポーリング",
+   "type": "stat",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "kairan-prom"
+   },
+   "gridPos": {
+    "x": 20,
+    "y": 0,
+    "w": 4,
+    "h": 4
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "kairan-prom"
+     },
+     "expr": "kairan_cp_active_polls",
+     "legendFormat": "active polls"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+   },
+   "options": {}
+  },
+  {
+   "id": 7,
+   "title": "Applied version per proxy / プロキシ別の適用バージョン",
+   "type": "timeseries",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "kairan-prom"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 4,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "kairan-prom"
+     },
+     "expr": "kairan_proxy_applied_version",
+     "legendFormat": "{{instance_name}}"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+   },
+   "options": {}
+  },
+  {
+   "id": 8,
+   "title": "Proxy state / プロキシの状態",
+   "type": "table",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "kairan-prom"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 4,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "kairan-prom"
+     },
+     "expr": "kairan_proxy_state == 1",
+     "legendFormat": "{{instance_name}}",
+     "instant": true,
+     "format": "table"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+   },
+   "options": {}
+  },
+  {
+   "id": 9,
+   "title": "Policies applied (rate) / 適用",
+   "type": "timeseries",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "kairan-prom"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 12,
+    "w": 8,
+    "h": 7
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "kairan-prom"
+     },
+     "expr": "sum by (instance_name) (increase(kairan_proxy_policies_applied_total[1m]))",
+     "legendFormat": "{{instance_name}}"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+   },
+   "options": {}
+  },
+  {
+   "id": 10,
+   "title": "Policies rejected / 拒否",
+   "type": "timeseries",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "kairan-prom"
+   },
+   "gridPos": {
+    "x": 8,
+    "y": 12,
+    "w": 8,
+    "h": 7
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "kairan-prom"
+     },
+     "expr": "sum by (instance_name) (increase(kairan_proxy_policies_rejected_total[1m]))",
+     "legendFormat": "{{instance_name}}"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+   },
+   "options": {},
+   "description": "Bad, unsigned, single-signed, old or wrong-tenant policies. 不正なポリシー。"
+  },
+  {
+   "id": 11,
+   "title": "Tool calls allowed vs denied / 許可と拒否",
+   "type": "timeseries",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "kairan-prom"
+   },
+   "gridPos": {
+    "x": 16,
+    "y": 12,
+    "w": 8,
+    "h": 7
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "kairan-prom"
+     },
+     "expr": "sum(rate(kairan_proxy_calls_allowed_total[1m]))",
+     "legendFormat": "allowed"
+    },
+    {
+     "refId": "B",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "kairan-prom"
+     },
+     "expr": "sum(rate(kairan_proxy_calls_denied_total[1m]))",
+     "legendFormat": "denied"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+   },
+   "options": {}
+  },
+  {
+   "id": 12,
+   "title": "CP polls by result / ポーリング結果",
+   "type": "timeseries",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "kairan-prom"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 19,
+    "w": 8,
+    "h": 7
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "kairan-prom"
+     },
+     "expr": "sum by (result) (rate(kairan_cp_polls_total[1m]))",
+     "legendFormat": "{{result}}"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+   },
+   "options": {}
+  },
+  {
+   "id": 13,
+   "title": "CP status reports / ステータス受信",
+   "type": "timeseries",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "kairan-prom"
+   },
+   "gridPos": {
+    "x": 8,
+    "y": 19,
+    "w": 8,
+    "h": 7
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "kairan-prom"
+     },
+     "expr": "sum by (result) (rate(kairan_cp_status_total[1m]))",
+     "legendFormat": "{{result}}"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+   },
+   "options": {}
+  },
+  {
+   "id": 14,
+   "title": "Scrape targets up / スクレイプ状態",
+   "type": "timeseries",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "kairan-prom"
+   },
+   "gridPos": {
+    "x": 16,
+    "y": 19,
+    "w": 8,
+    "h": 7
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "kairan-prom"
+     },
+     "expr": "up",
+     "legendFormat": "{{job}} {{instance}}"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+   },
+   "options": {}
+  }
+ ],
+ "templating": {
+  "list": []
+ },
+ "annotations": {
+  "list": []
+ },
+ "description": "Real proxies only (10 containers, 2 tenants). Metadata from the kairan-cp and kairan-proxy metrics listeners."
+}
