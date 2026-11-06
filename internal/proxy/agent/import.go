@@ -37,10 +37,7 @@ func (a *Agent) Import(data []byte) (Imported, error) {
 	if !booted {
 		return Imported{}, errors.New("agent: Import before Boot")
 	}
-	var from uint64
-	if a.al != nil {
-		from, _ = a.al.LastApplied()
-	}
+	from := a.lastApplied()
 	env, err := trust.DecodeEnvelope(data)
 	if err != nil {
 		a.reject(wire.ErrMalformed, 0, "", from)

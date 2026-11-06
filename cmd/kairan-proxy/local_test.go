@@ -90,7 +90,7 @@ func TestLocalRoutesAreReadOnly(t *testing.T) {
 func TestMetrics(t *testing.T) {
 	stats := &agent.Stats{}
 	for _, n := range []string{"enforce_allow", "enforce_allow", "enforce_allow", "enforce_deny", "agent_apply_ok", "agent_apply_rejected", "agent_apply_rejected",
-		"agent_poll_errors", "agent_status_errors", "agent_policy_expired", "agent_boot_tampered", "enforce_reject", "enforce_auth_failed",
+		"agent_poll_errors", "agent_status_errors", "agent_policy_expired", "agent_boot_tampered", "agent_apply_log_reset", "enforce_reject", "enforce_auth_failed",
 		"enforce_upstream_errors", "enforce_decision_log_errors", "declog_write_errors", "declog_rotate_errors", "test_only_trusted_key"} {
 		stats.Inc(n)
 	}
@@ -118,6 +118,7 @@ func TestMetrics(t *testing.T) {
 		"kairan_proxy_status_errors_total 1",
 		"kairan_proxy_policy_expired_total 1",
 		"kairan_proxy_boot_tampered_total 1",
+		"kairan_proxy_apply_log_resets_total 1",
 		"kairan_proxy_requests_rejected_total 1",
 		"kairan_proxy_auth_failures_total 1",
 		"kairan_proxy_upstream_errors_total 1",

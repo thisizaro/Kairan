@@ -23,8 +23,40 @@
 // partial line is cut off again before the error is returned.
 //
 // Open refuses a log that fails Verify, including one whose last line lacks
-// its newline (ErrTruncated). The caller treats that as tampering; it does
+// its newline (ErrTruncated). The caller treats that as tampering; Open does
 // not repair the file.
+//
+// # Reset: leaving a broken log (P-13, M-D64)
+//
+// A log that fails Verify is never edited, truncated or deleted. When a newer
+// valid policy arrives, the proxy calls Reset. The broken file stays as
+// evidence under <log>.broken-<n> (n is the smallest number not in use, so two
+// resets give broken-1 and broken-2; a hard link makes the new name before the
+// old name is replaced, so there is never a moment without the evidence), and
+// a new chain starts at Seq 1 with Prev "". Its first line is the reset entry:
+//
+//	{"seq":1,"time":"...","from":F,"to":0,"hash":"H","result":"tampered",
+//	 "reset":{"seq":S,"file":"apply.log.broken-N","reason":"R"},"prev":"","self":"..."}
+//
+// from (F) is the floor: the larger of the highest version applied in the
+// verifiable part of the broken file and the version the caller knows (the
+// stored policy), carried over so that a version already applied is never
+// accepted again (I2). hash (H) is the Self of the broken file's last
+// verifiable entry (its head) and reset.seq (S) its seq; both are empty or 0
+// when not even the first line verified. reset.file is the base name of the
+// kept file. reset.reason is one of chain_broken, malformed, truncated or
+// unreadable: the first failure Verify found. Decode accepts the reset key
+// only on a Seq 1 entry with Result "tampered", To 0 and a file name of the
+// form <name>.broken-<n>; the reset fields are part of Self, and no other
+// entry has the key, so every older log hashes exactly as before.
+//
+// LastApplied on a chain with no applied entry yet returns the floor and no
+// hash. ResetPending is true until the first applied entry (a rejection does
+// not end it): boot treats a pending reset as Tampered, so a crash between the
+// reset and the first apply still fails closed. The control plane sees the
+// anchor (log_seq, log_head) go backwards; that is intended (M-D48). The old
+// chain can be verified only by hand, on the kept file, up to its first bad
+// line. The caller holds the data directory lock around Reset.
 package applylog
 
 import (
@@ -73,6 +105,9 @@ type Entry struct {
 	Result wire.ErrorCode // "" = applied
 	Prev   wire.Hash      // Self of the previous entry ("" for the first); filled by Append
 	Self   wire.Hash      // SHA-256 over this entry's canonical fields + Prev; filled by Append
+	// Reset is set only on the first entry of a chain that replaced a broken
+	// log (see Reset). The zero value means this is an ordinary entry.
+	Reset ResetInfo
 }
 
 // line is the on-disk shape. Field order here is the key order on disk.
@@ -83,8 +118,15 @@ type line struct {
 	To     uint64         `json:"to"`
 	Hash   wire.Hash      `json:"hash"`
 	Result wire.ErrorCode `json:"result"`
+	Reset  *resetLine     `json:"reset,omitempty"`
 	Prev   wire.Hash      `json:"prev"`
 	Self   wire.Hash      `json:"self"`
+}
+
+type resetLine struct {
+	Seq    uint64 `json:"seq"`
+	File   string `json:"file"`
+	Reason string `json:"reason"`
 }
 
 // fmtTime is the one time format: UTC, with trailing zeros of the fraction
@@ -93,10 +135,14 @@ const fmtTime = time.RFC3339Nano
 
 // Encode returns the canonical line for e, without the trailing newline.
 func Encode(e Entry) []byte {
-	b, err := json.Marshal(line{
+	l := line{
 		Seq: e.Seq, Time: e.Time.UTC().Format(fmtTime), From: e.From, To: e.To,
 		Hash: e.Hash, Result: e.Result, Prev: e.Prev, Self: e.Self,
-	})
+	}
+	if !e.Reset.IsZero() {
+		l.Reset = &resetLine{Seq: e.Reset.Seq, File: e.Reset.File, Reason: e.Reset.Reason}
+	}
+	b, err := json.Marshal(l)
 	if err != nil { // cannot happen: only strings and integers
 		panic("applylog: " + err.Error())
 	}
@@ -120,6 +166,12 @@ func Decode(data []byte) (Entry, error) {
 		return Entry{}, ErrMalformed
 	}
 	e := Entry{Seq: l.Seq, Time: t.UTC(), From: l.From, To: l.To, Hash: l.Hash, Result: l.Result, Prev: l.Prev, Self: l.Self}
+	if l.Reset != nil {
+		if l.Reset.File == "" { // "reset":{} is not the absence of a reset
+			return Entry{}, ErrMalformed
+		}
+		e.Reset = ResetInfo{Seq: l.Reset.Seq, File: l.Reset.File, Reason: l.Reset.Reason}
+	}
 	if err := check(e); err != nil {
 		return Entry{}, err
 	}
@@ -144,6 +196,11 @@ func check(e Entry) error {
 		return ErrMalformed
 	case !e.Self.Valid():
 		return ErrMalformed
+	case !e.Reset.IsZero():
+		if e.Seq != 1 || e.Result != wire.ErrTampered || e.To != 0 || !e.Reset.valid() ||
+			(e.Reset.Seq == 0) != (e.Hash == "") {
+			return ErrMalformed
+		}
 	}
 	return nil
 }
@@ -163,6 +220,12 @@ func computeSelf(e Entry) wire.Hash {
 	} {
 		b.WriteString(f)
 		b.WriteByte('\n')
+	}
+	if !e.Reset.IsZero() { // only reset entries; every other entry hashes as before
+		for _, f := range []string{"reset", strconv.FormatUint(e.Reset.Seq, 10), e.Reset.File, e.Reset.Reason} {
+			b.WriteString(f)
+			b.WriteByte('\n')
+		}
 	}
 	sum := sha256.Sum256(b.Bytes())
 	return wire.Hash(hex.EncodeToString(sum[:]))
@@ -218,14 +281,32 @@ func Read(r io.Reader) ([]Entry, error) {
 
 // Log is an open apply log. It is safe for concurrent use.
 type Log struct {
-	mu   sync.Mutex
-	f    *os.File
-	clk  clock.Clock
-	last Entry // zero if empty
-	size int64 // bytes in the file after the last good append
-	// lastApplied is the newest entry with Result == "".
-	appliedVersion uint64
-	appliedHash    wire.Hash
+	mu    sync.Mutex
+	f     *os.File
+	clk   clock.Clock
+	last  Entry // zero if empty
+	size  int64 // bytes in the file after the last good append
+	tally tally
+}
+
+// tally folds the entries of a log into what the proxy needs from it: the
+// newest applied version and hash, and whether a reset is still waiting for
+// its first apply.
+type tally struct {
+	version uint64
+	hash    wire.Hash
+	pending bool
+}
+
+func (t *tally) add(e Entry) {
+	switch {
+	case !e.Reset.IsZero():
+		// A reset keeps the floor of the log it replaced, with no hash, and
+		// stays pending until a policy is applied on the new chain.
+		t.version, t.hash, t.pending = e.From, "", true
+	case e.Result == "":
+		t.version, t.hash, t.pending = e.To, e.Hash, false
+	}
 }
 
 // Open opens (creating if absent, mode 0600) the log at path and verifies
@@ -243,11 +324,7 @@ func Open(path string, clk clock.Clock) (*Log, error) {
 		return nil, fmt.Errorf("applylog: open: %w", err)
 	}
 	l := &Log{f: f, clk: clk}
-	last, _, consumed, err := scan(f, func(e Entry) {
-		if e.Result == "" {
-			l.appliedVersion, l.appliedHash = e.To, e.Hash
-		}
-	})
+	last, _, consumed, err := scan(f, l.tally.add)
 	if err != nil {
 		f.Close()
 		return nil, err
@@ -316,9 +393,7 @@ func (l *Log) Append(e Entry) (Entry, error) {
 	}
 	l.last = e
 	l.size += int64(len(data))
-	if e.Result == "" {
-		l.appliedVersion, l.appliedHash = e.To, e.Hash
-	}
+	l.tally.add(e)
 	return e, nil
 }
 
@@ -341,11 +416,22 @@ func (l *Log) Head() (seq uint64, head wire.Hash) {
 // LastApplied is the version and payload hash of the newest entry whose
 // Result is "" (applied, including repair entries). It is 0 and "" if
 // nothing was ever applied. It is the source of the highest applied version
-// across restarts (I2).
+// across restarts (I2). On a chain that starts with a reset entry and has no
+// applied entry yet, the version is the floor the reset carried over from the
+// broken log and the hash is "".
 func (l *Log) LastApplied() (version uint64, hash wire.Hash) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return l.appliedVersion, l.appliedHash
+	return l.tally.version, l.tally.hash
+}
+
+// ResetPending reports whether the chain starts with a reset entry and no
+// policy has been applied since. Boot treats that as Tampered: the log
+// cannot vouch for the policy on disk until a new one is applied.
+func (l *Log) ResetPending() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.tally.pending
 }
 
 // Close closes the file. Later Appends fail.

@@ -323,9 +323,9 @@ func TestBrokenApplyLogStartsTampered(t *testing.T) {
 	w := newWorld(t)
 	data := filepath.Join(w.dir, "data")
 	os.MkdirAll(data, 0o700)
-	os.WriteFile(filepath.Join(data, "apply.log"), []byte("garbage that is not a log\n"), 0o600)
-	env := w.envelope(3, time.Hour)
-	w.cpEnv.Store(&env) // offered, but cannot be applied without a log
+	garbage := "garbage that is not a log\n"
+	os.WriteFile(filepath.Join(data, "apply.log"), []byte(garbage), 0o600)
+	// Nothing newer on offer: Tampered, nothing enforced, log untouched.
 	r := w.start()
 	if reached, _ := w.call(r, "key-sales-123", "crm.read_contact"); reached {
 		t.Fatal("proxy with a broken apply log let a call through")
@@ -335,13 +335,42 @@ func TestBrokenApplyLogStartsTampered(t *testing.T) {
 	if s, _ := w.lastStatus(); s.State != wire.StateTampered || s.AppliedVersion != 0 {
 		t.Fatalf("status = %+v", s)
 	}
-	if _, err := os.Stat(filepath.Join(data, "policy.json")); err == nil {
-		t.Fatal("policy was saved although it could not be logged")
-	}
-	b, _ := os.ReadFile(filepath.Join(data, "apply.log"))
-	if string(b) != "garbage that is not a log\n" {
+	if b, _ := os.ReadFile(filepath.Join(data, "apply.log")); string(b) != garbage {
 		t.Fatal("the broken apply log was modified")
 	}
+	if _, err := os.Stat(filepath.Join(data, "apply.log.broken-1")); err == nil {
+		t.Fatal("reset without a policy to apply")
+	}
+	r.stop(t)
+}
+
+// A newer valid policy from the control plane lifts Tampered: the broken log
+// is kept, a new chain starts, and the reset is in the status report (P-13,
+// M-D64, Q-D30).
+func TestBrokenApplyLogRecoversOnNewerPolicy(t *testing.T) {
+	w := newWorld(t)
+	data := filepath.Join(w.dir, "data")
+	os.MkdirAll(data, 0o700)
+	garbage := "garbage that is not a log\n"
+	os.WriteFile(filepath.Join(data, "apply.log"), []byte(garbage), 0o600)
+	env := w.envelope(3, time.Hour)
+	w.cpEnv.Store(&env)
+	r := w.start()
+	w.await("enforcing again", func() bool { s, ok := w.lastStatus(); return ok && s.State == wire.StateEnforcing })
+	s, _ := w.lastStatus()
+	if s.AppliedVersion != 3 || s.LogSeq != 2 || s.LastError == nil || s.LastError.Code != wire.ErrTampered {
+		t.Fatalf("status = %+v last_error %+v", s, s.LastError)
+	}
+	if reached, body := w.call(r, "key-sales-123", "crm.read_contact"); !reached {
+		t.Fatalf("read tool denied after recovery: %s", body)
+	}
+	if b, _ := os.ReadFile(filepath.Join(data, "apply.log.broken-1")); string(b) != garbage {
+		t.Fatal("the broken log was not kept byte for byte")
+	}
+	if !strings.Contains(r.stderr.String(), "apply log reset") || !japanese.MatchString(r.stderr.String()) {
+		t.Fatalf("no bilingual reset line:\n%s", r.stderr.String())
+	}
+	r.stop(t)
 }
 
 func TestTestOnlyKeyWarning(t *testing.T) {
