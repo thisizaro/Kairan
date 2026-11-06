@@ -94,8 +94,9 @@ func main() {
 // carries key material or payload text.
 type cliError struct {
 	en, ja string
-	usage  bool  // exit 2 instead of 1
-	cause  error // for errors.Is in tests; not printed
+	usage  bool   // exit 2 instead of 1
+	help   string // usage text to print after the message; default is helpSummary
+	cause  error  // for errors.Is in tests; not printed
 }
 
 func (e *cliError) Error() string { return e.en }
@@ -127,7 +128,11 @@ func run(args []string, s streams) int {
 	}
 	fmt.Fprintf(s.err, "error: %s\nエラー: %s\n", ce.en, ce.ja)
 	if ce.usage {
-		fmt.Fprint(s.err, "\n"+helpSummary)
+		if ce.help != "" {
+			fmt.Fprint(s.err, "\n"+ce.help)
+		} else {
+			fmt.Fprint(s.err, "\n"+helpSummary)
+		}
 		return exitUsage
 	}
 	return exitFailed
@@ -167,20 +172,25 @@ func dispatch(args []string, s streams) error {
 	return usageErr("unknown command", "不明なコマンドです")
 }
 
-// flagExit carries an exit code chosen while parsing flags (-h is 0, a bad
-// flag is 2); the flag package has already printed its message.
+// flagExit ends the command with an exit code chosen while parsing flags (-h
+// is 0); the usage has already been printed.
 type flagExit struct{ code int }
 
 func (e *flagExit) Error() string { return "flag exit" }
 
-// parseFlags parses args into fs. Stray positional arguments are a usage error.
+// parseFlags parses args into fs. The flag package's own output goes nowhere:
+// its errors are English only and repeat what was typed, so they are mapped to
+// bilingual messages (flagError). -h prints the subcommand's usage and exits 0.
+// Stray positional arguments are a usage error.
 func parseFlags(fs *flag.FlagSet, args []string, s streams) error {
-	fs.SetOutput(s.err)
+	fs.SetOutput(io.Discard)
+	fs.Usage = func() {}
 	if err := fs.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
+		if isHelp(err) {
+			fmt.Fprint(s.out, usageFor(fs))
 			return &flagExit{exitOK}
 		}
-		return &flagExit{exitUsage}
+		return flagError(fs, err)
 	}
 	if fs.NArg() != 0 {
 		return usageErr("unexpected argument", "余分な引数があります")
