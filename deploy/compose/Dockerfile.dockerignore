@@ -1,0 +1,12 @@
+.git
+.claude
+.githooks
+docs
+scripts
+test
+bench
+deploy
+*.md
+**/*_test.go
+.break-bin
+Makefile

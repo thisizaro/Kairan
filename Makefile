@@ -5,7 +5,7 @@ SHELL := /usr/bin/env bash
 # Go steps are skipped while the scaffold has no .go files.
 HAVE_GO := $(shell find . -name '*.go' -not -path './.git/*' -print -quit 2>/dev/null)
 
-.PHONY: ci test break hooks-test fuzz-smoke lint vet check-jsonl vulncheck e2e chaos bench demo k3d-demo plan log
+.PHONY: ci test break hooks-test fuzz-smoke lint vet check-jsonl vulncheck e2e chaos bench demo demo-down results k3d-demo plan log
 
 ci: vet lint test fuzz-smoke check-jsonl hooks-test vulncheck
 	@echo "make ci: ok"
@@ -42,6 +42,8 @@ break:
 	@mkdir -p $(BREAK_BIN); \
 	if [ -d cmd/kairanctl ]; then go build -o $(BREAK_BIN)/kairanctl ./cmd/kairanctl && export KAIRANCTL_BIN=$(BREAK_BIN)/kairanctl; fi; \
 	if [ -d cmd/fakemcp ]; then go build -o $(BREAK_BIN)/fakemcp ./cmd/fakemcp && export FAKEMCP_BIN=$(BREAK_BIN)/fakemcp; fi; \
+	if [ -d cmd/kairan-cp ]; then go build -o $(BREAK_BIN)/kairan-cp ./cmd/kairan-cp && export CP_BIN=$(BREAK_BIN)/kairan-cp; fi; \
+	if [ -d cmd/kairan-proxy ]; then go build -o $(BREAK_BIN)/kairan-proxy ./cmd/kairan-proxy && export PROXY_BIN=$(BREAK_BIN)/kairan-proxy; fi; \
 	if ! find test/break -name '*_test.go' -print -quit 2>/dev/null | grep -q .; then echo "break: no break tests yet"; exit 0; fi; \
 	rc=0; go test -race -count=1 -v ./test/break/... >$(BREAK_BIN)/break.log 2>&1 || rc=$$?; \
 	grep -E '^(ok|FAIL)[[:space:]]' $(BREAK_BIN)/break.log || true; \
@@ -75,14 +77,23 @@ else
 	@echo "vulncheck: no Go files yet, skipped"
 endif
 
+# Compose stack and chaos scenarios (Q-01, Q-02): local Docker only; E2E=1 enables test/e2e.
 e2e:
-	@echo "not implemented yet (see PLAN Q-02)"
+	@E2E=1 go test -count=1 -timeout 45m -v ./test/e2e/...
+# S10 changes the stack's policies, so S1-S9 and S10 each get a fresh stack (TestMain brings one up per run).
 chaos:
-	@echo "not implemented yet (see PLAN Q-02)"
+	@E2E=1 go test -count=1 -timeout 45m -v -run '^TestS[1-9][A-Z]' ./test/e2e/...
+	@E2E=1 go test -count=1 -timeout 30m -v -run '^TestS10' ./test/e2e/...
+# Benchmarks M1-M4, M7 (Q-06, M-D66) then RESULTS.md (Q-07); about 50 minutes, local Docker.
 bench:
-	@echo "not implemented yet (see PLAN Q-06)"
+	@go run ./bench/run
+	@go run ./bench/results
+results:
+	@go run ./bench/results
 demo:
-	@echo "not implemented yet (see PLAN Q-01)"
+	@deploy/compose/demo.sh demo
+demo-down:
+	@deploy/compose/demo.sh down
 k3d-demo:
 	@echo "not implemented yet (see PLAN Q-08)"
 

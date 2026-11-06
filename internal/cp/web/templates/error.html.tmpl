@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="{{.Lang}}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{t "error.title"}} - {{t "title"}}</title>
+<link rel="stylesheet" href="/static/fleet.css">
+</head>
+<body>
+<main>
+<h1>{{t "error.title"}}</h1>
+<p class="alarm"><code>{{.Code}}</code> {{.Text}}</p>
+<p><a href="{{.SwitchURL}}" hreflang="{{.SwitchLang}}" lang="{{.SwitchLang}}">{{t "lang.switch"}}</a></p>
+</main>
+</body>
+</html>

@@ -95,4 +95,7 @@ type TimelineEntry struct {
 type TimelineView struct {
 	Tenant  ID              `json:"tenant"`
 	Entries []TimelineEntry `json:"entries"`
+	// Dropped counts, per proxy, the oldest entries the CP discarded to keep at most 256 per proxy
+	// (M-D55, Q-D21). Evidence export reports them as "N earlier entries dropped". Omitted when none.
+	Dropped map[ID]uint64 `json:"dropped,omitempty"`
 }

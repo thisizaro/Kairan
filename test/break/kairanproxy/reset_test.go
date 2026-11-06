@@ -1,0 +1,476 @@
+package kairanproxybreak
+
+// Break pass for P-13 (M-D64, Q-D30): recovery from a broken apply log and attacks on the reset itself.
+// Needs the P-13 API of package applylog (Inspect, Entry.Reset, Reason*), which is why it is a file of its own.
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"syscall"
+	"testing"
+	"time"
+
+	"kairan/internal/clock"
+	"kairan/internal/proxy/applylog"
+	"kairan/internal/wire"
+)
+
+// Q-D30 / M-D64 / P-13 (go doc of applylog "Reset", kairan-proxy "A broken apply log", agent "A broken apply log"):
+// a broken apply log is never repaired in place. The proxy stays Tampered while nothing newer is offered; a newer
+// VALID policy (above the floor: the larger of the highest version applied in the verifiable part of the log and the
+// stored policy) keeps the broken file byte for byte as apply.log.broken-<n> and starts a new chain whose first
+// entry is a reset entry recording the old head and seq. The same or an older version, or an invalid newer one,
+// imports nothing and touches nothing.
+
+// brokenLogCases are the five ways the doc names to break a two-entry log (v1, v2).
+var brokenLogCases = []struct {
+	name string
+	f    func(b []byte) []byte
+}{
+	{"garbage line appended", func(b []byte) []byte { return append(append([]byte(nil), b...), "xx\n"...) }},
+	{"field edited", func(b []byte) []byte { return bytes.Replace(b, []byte(`"to":1`), []byte(`"to":0`), 1) }},
+	{"last line cut", func(b []byte) []byte { return b[:len(b)-5] }},
+	{"entry deleted", func(b []byte) []byte { return bytes.SplitAfter(b, []byte("\n"))[1] }},
+	{"hash edited", func(b []byte) []byte { return bytes.Replace(b, []byte(`"self":"`), []byte(`"self":"0`), 1) }},
+}
+
+// brokenAt applies v1 and v2 by import, then breaks the log with f. It returns the broken bytes, which must
+// really fail verification (otherwise the test itself is wrong).
+func (e *imp) brokenAt(f func([]byte) []byte) []byte {
+	e.t.Helper()
+	e.apply(good(e.t, 1))
+	e.apply(good(e.t, 2))
+	return e.breakLog(f)
+}
+
+func (e *imp) breakLog(f func([]byte) []byte) []byte {
+	e.t.Helper()
+	lp := filepath.Join(e.dir, "apply.log")
+	b, err := os.ReadFile(lp)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	nb := f(b)
+	if bytes.Equal(nb, b) {
+		e.t.Fatalf("edit did not apply to %q", b)
+	}
+	if err := os.WriteFile(lp, nb, 0o600); err != nil {
+		e.t.Fatal(err)
+	}
+	if p, err := applylog.Inspect(lp); err != nil || p.Err == nil {
+		e.t.Fatalf("the edited log still verifies (%+v, %v)", p, err)
+	}
+	return nb
+}
+
+// untouched checks that a run changed nothing: policy bytes and mtime, the broken log byte for byte, and no
+// new files in the data directory.
+func (e *imp) untouched(name string, before snapshot, brokenLog []byte) {
+	e.t.Helper()
+	after := e.snap()
+	if after.hasPolicy != before.hasPolicy || !bytes.Equal(after.policy, before.policy) || !after.mtime.Equal(before.mtime) {
+		e.t.Errorf("%s: the stored policy changed under a broken apply log (I3, I6)", name)
+	}
+	if !bytes.Equal(after.log, brokenLog) {
+		e.t.Errorf("%s: the broken apply log was modified or 'repaired'", name)
+	}
+	if strings.Join(after.others, ",") != strings.Join(before.others, ",") {
+		e.t.Errorf("%s: files appeared or went in the data dir: %v -> %v", name, before.others, after.others)
+	}
+}
+
+func keptFile(t testing.TB, dir string, n int) []byte {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(dir, fmt.Sprintf("apply.log.broken-%d", n)))
+	if err != nil {
+		t.Errorf("apply.log.broken-%d: %v", n, err)
+	}
+	return b
+}
+
+func storedVersionIs(t testing.TB, dir string, want uint64) {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(dir, "policy.json"))
+	if err != nil {
+		t.Errorf("policy.json: %v", err)
+		return
+	}
+	// compare the version, not the bytes: validPolicy stamps time.Now(), so two builds of "v4" differ
+	var env wire.Envelope
+	var doc struct {
+		Version uint64 `json:"version"`
+	}
+	if err := json.Unmarshal(raw, &env); err != nil || json.Unmarshal(env.Payload, &doc) != nil || doc.Version != want {
+		t.Errorf("policy.json is not v%d (version %d, %v)", want, doc.Version, err)
+	}
+}
+
+// bootDenies starts a serving proxy on the data directory with the control plane unreachable and checks it is
+// deny-all (Tampered). It stops the proxy again.
+func bootDenies(t *testing.T, e *imp, what string) {
+	t.Helper()
+	l := &life{t: t, dir: e.dir, cp: e.cp, up: newUpstream(t)}
+	l.start("http://"+freePort(t), nil, nil)
+	for _, tool := range []string{"crm.read_contact", "crm.update_deal", "admin.shutdown", "help.faq"} {
+		for _, k := range []string{keySales, keyIntrn} {
+			if r := l.p.call(k, callBody(tool, `{}`)); allowed(r) {
+				t.Errorf("%s: a proxy booted on a broken or reset-pending apply log allowed %s (I3)", what, tool)
+			}
+		}
+	}
+	if !strings.Contains(l.p.out.String(), "tamper") {
+		t.Errorf("%s: no tamper message on the operator log: %s", what, clip(l.p.out.String()))
+	}
+	l.p.signal(syscall.SIGTERM)
+	l.p.waitExit(10 * time.Second)
+}
+
+func bootEnforces(t *testing.T, e *imp, what string) {
+	t.Helper()
+	l := &life{t: t, dir: e.dir, cp: e.cp, up: newUpstream(t)}
+	l.start("http://"+freePort(t), nil, nil)
+	if !allowed(l.p.call(keySales, callBody("crm.read_contact", `{}`))) {
+		t.Errorf("%s: a proxy booted after the recovery does not enforce the new policy: %s", what, clip(l.p.out.String()))
+	}
+	if allowed(l.p.call(keySales, callBody("admin.shutdown", `{}`))) || allowed(l.p.call(keyIntrn, callBody("crm.read_contact", `{}`))) {
+		t.Errorf("%s: recovered policy allows more than it says (I3)", what)
+	}
+	l.p.signal(syscall.SIGTERM)
+	l.p.waitExit(10 * time.Second)
+}
+
+func resetReasonOK(r string) bool {
+	switch r {
+	case applylog.ReasonChainBroken, applylog.ReasonMalformed, applylog.ReasonTruncated, applylog.ReasonUnreadable:
+		return true
+	}
+	return false
+}
+
+// Nothing newer offered: the log stays as it is, the proxy stays Tampered.
+func TestImportWithBrokenApplyLogNothingNewerImportsNothing(t *testing.T) {
+	for _, c := range brokenLogCases {
+		t.Run(c.name, func(t *testing.T) {
+			e := newImp(t)
+			nb := e.brokenAt(c.f)
+			// the floor is v2: the stored policy is valid and at v2, whatever the verifiable part of the log says
+			offers := map[string][]byte{
+				"same version (v2)":            envJSON(good(t, 2)),
+				"older version (v1)":           envJSON(good(t, 1)),
+				"newer but unsigned (v3)":      envJSON(envelopeOf(validPolicy(3))),
+				"newer but one signature (v3)": envJSON(signedBy(t, validPolicy(3), "admin-a")),
+				"newer but wrong tenant (v3)":  envJSON(signedBy(t, policyDoc("city-b", 3, time.Now().Add(-time.Hour), time.Now().Add(time.Hour)), "admin-a", "admin-b")),
+				"newer but expired (v3)":       envJSON(signedBy(t, policyDoc(tenant, 3, time.Now().Add(-48*time.Hour), time.Now().Add(-24*time.Hour)), "admin-a", "admin-b")),
+				"not an envelope":              []byte("{}"),
+			}
+			for name, bundle := range offers {
+				before := e.snap()
+				code, out := e.run(e.bundle(bundle))
+				if code != 1 {
+					t.Errorf("%s: exit %d, want 1: %s", name, code, clip(out))
+				}
+				if !hasJP(out) {
+					t.Errorf("%s: not bilingual: %s", name, clip(out))
+				}
+				e.untouched(name, before, nb)
+			}
+			bootDenies(t, e, c.name)
+			e.untouched("boot", e.snap(), nb)
+		})
+	}
+}
+
+// A newer valid bundle ends the Tampered state: the broken log is kept, a reset entry starts the new chain.
+func TestImportWithBrokenApplyLogRecoversOnNewerValid(t *testing.T) {
+	for _, c := range brokenLogCases {
+		t.Run(c.name, func(t *testing.T) {
+			e := newImp(t)
+			nb := e.brokenAt(c.f)
+			pre, err := applylog.Inspect(filepath.Join(e.dir, "apply.log"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			newer := good(t, 3)
+			code, out := e.run(e.bundle(envJSON(newer)))
+			if code != 0 {
+				t.Fatalf("a newer valid bundle did not import: exit %d: %s", code, clip(out))
+			}
+			if !hasJP(out) {
+				t.Errorf("not bilingual: %s", clip(out))
+			}
+			if got := keptFile(t, e.dir, 1); !bytes.Equal(got, nb) {
+				t.Errorf("apply.log.broken-1 is not the broken log byte for byte (%d bytes, want %d)", len(got), len(nb))
+			}
+			if s := e.snap(); strings.Join(s.others, ",") != "apply.log.broken-1" {
+				t.Errorf("data dir has %v besides the known files, want exactly apply.log.broken-1", s.others)
+			}
+			storedVersionIs(t, e.dir, 3)
+
+			raw, _ := os.ReadFile(filepath.Join(e.dir, "apply.log"))
+			ents, err := applylog.Read(bytes.NewReader(raw))
+			if err != nil || len(ents) != 2 {
+				t.Fatalf("the new chain: %d entries, %v; want it to verify with the reset entry and the apply", len(ents), err)
+			}
+			r, a := ents[0], ents[1]
+			if r.Seq != 1 || r.Prev != "" || r.Result != wire.ErrTampered || r.To != 0 {
+				t.Errorf("reset entry %+v: want seq 1, no prev, result tampered, to 0", r)
+			}
+			if r.Reset.File != "apply.log.broken-1" || !resetReasonOK(r.Reset.Reason) {
+				t.Errorf("reset info %+v: want file apply.log.broken-1 and a documented reason", r.Reset)
+			}
+			if r.Reset.Seq != pre.Seq || r.Hash != pre.Head {
+				t.Errorf("reset entry records old seq %d head %q, the verifiable part of the broken log ends at seq %d head %q", r.Reset.Seq, r.Hash, pre.Seq, pre.Head)
+			}
+			if r.From != 2 {
+				t.Errorf("reset floor %d, want 2 (the stored policy's version; I2: a version once applied is never accepted again)", r.From)
+			}
+			if a.Seq != 2 || a.Prev != r.Self || a.Result != "" || a.From != 2 || a.To != 3 || a.Hash != hashOf(newer.Payload) {
+				t.Errorf("apply entry %+v: want seq 2 chained on the reset entry, v2 -> v3, with the payload hash", a)
+			}
+
+			// the floor holds after the reset: the same and older versions and a replay of v3 are rejected
+			for _, v := range []uint64{1, 2, 3} {
+				e.reject(fmt.Sprintf("v%d after the reset", v), e.bundle(envJSON(good(t, v))), true)
+			}
+			bootEnforces(t, e, c.name)
+			// the kept file is still byte for byte what it was
+			if got := keptFile(t, e.dir, 1); !bytes.Equal(got, nb) {
+				t.Errorf("apply.log.broken-1 changed after the recovery")
+			}
+		})
+	}
+}
+
+// Two resets give broken-1 and broken-2; the first kept file is never touched again.
+func TestImportTwoResetsKeepTwoBrokenLogs(t *testing.T) {
+	e := newImp(t)
+	nb1 := e.brokenAt(brokenLogCases[0].f)
+	e.apply(good(t, 3))
+	// break the new chain too (cut its last line) and recover again
+	nb2 := e.breakLog(func(b []byte) []byte { return b[:len(b)-5] })
+	pre, _ := applylog.Inspect(filepath.Join(e.dir, "apply.log"))
+	e.apply(good(t, 4))
+	if got := keptFile(t, e.dir, 1); !bytes.Equal(got, nb1) {
+		t.Errorf("broken-1 changed by the second reset")
+	}
+	if got := keptFile(t, e.dir, 2); !bytes.Equal(got, nb2) {
+		t.Errorf("broken-2 is not the second broken log byte for byte")
+	}
+	if s := e.snap(); strings.Join(s.others, ",") != "apply.log.broken-1,apply.log.broken-2" {
+		t.Errorf("data dir has %v, want broken-1 and broken-2", s.others)
+	}
+	raw, _ := os.ReadFile(filepath.Join(e.dir, "apply.log"))
+	ents, err := applylog.Read(bytes.NewReader(raw))
+	if err != nil || len(ents) != 2 {
+		t.Fatalf("second chain: %d entries, %v", len(ents), err)
+	}
+	if ents[0].Reset.File != "apply.log.broken-2" || ents[0].Reset.Seq != pre.Seq || ents[0].Hash != pre.Head || ents[0].From != 3 || ents[1].To != 4 {
+		t.Errorf("second reset entry %+v / %+v", ents[0], ents[1])
+	}
+	storedVersionIs(t, e.dir, 4)
+	e.reject("v3 after two resets", e.bundle(envJSON(good(t, 3))), true)
+}
+
+// Kept evidence is never overwritten: a planted file under the next name is skipped, not replaced.
+func TestImportResetNeverOverwritesAKeptFile(t *testing.T) {
+	for _, plant := range []struct {
+		name string
+		n    []int
+	}{{"broken-1 taken", []int{1}}, {"broken-2 taken (gap at 1)", []int{2}}, {"broken-1 and broken-2 taken", []int{1, 2}}} {
+		t.Run(plant.name, func(t *testing.T) {
+			e := newImp(t)
+			nb := e.brokenAt(brokenLogCases[1].f)
+			planted := map[int][]byte{}
+			for _, n := range plant.n {
+				planted[n] = []byte(fmt.Sprintf("EARLIER EVIDENCE %d\n", n))
+				if err := os.WriteFile(filepath.Join(e.dir, fmt.Sprintf("apply.log.broken-%d", n)), planted[n], 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			e.apply(good(t, 3))
+			kept := 0
+			for n := 1; n <= 3; n++ {
+				got, err := os.ReadFile(filepath.Join(e.dir, fmt.Sprintf("apply.log.broken-%d", n)))
+				if err != nil {
+					continue
+				}
+				if want, ok := planted[n]; ok {
+					if !bytes.Equal(got, want) {
+						t.Errorf("apply.log.broken-%d, already in use, was overwritten", n)
+					}
+				} else if bytes.Equal(got, nb) {
+					kept++
+				} else {
+					t.Errorf("apply.log.broken-%d is neither planted nor the broken log", n)
+				}
+			}
+			if kept != 1 {
+				t.Errorf("the broken log was kept %d times under free names, want once", kept)
+			}
+		})
+	}
+}
+
+// A crash between the reset and the first apply leaves a log with only the reset entry. That proxy boots Tampered
+// even though the stored policy is valid, and the next newer offer recovers it WITHOUT a second reset.
+func TestImportCrashAfterResetBeforeFirstApply(t *testing.T) {
+	e := newImp(t)
+	nb := e.brokenAt(brokenLogCases[1].f)
+	storedV2, _ := os.ReadFile(filepath.Join(e.dir, "policy.json"))
+	e.apply(good(t, 3))
+	lp := filepath.Join(e.dir, "apply.log")
+	raw, _ := os.ReadFile(lp)
+	first := bytes.SplitAfter(raw, []byte("\n"))[0]
+	// state after the crash: reset entry only, the policy file still the old v2 (Save comes after the reset)
+	if err := os.WriteFile(lp, first, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(e.dir, "policy.json"), storedV2, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if ents, err := applylog.Read(bytes.NewReader(first)); err != nil || len(ents) != 1 || ents[0].Reset.IsZero() {
+		t.Fatalf("test setup: the cut log is not a lone reset entry: %v %v", ents, err)
+	}
+	bootDenies(t, e, "lone reset entry with a valid stored policy")
+	// not newer than the floor: rejected, still pending
+	before := e.snap()
+	if code, out := e.run(e.bundle(envJSON(good(t, 2)))); code != 1 {
+		t.Errorf("v2 into a reset-pending log: exit %d, want 1: %s", code, clip(out))
+	}
+	if after := e.snap(); !bytes.Equal(after.policy, before.policy) {
+		t.Errorf("a rejected import changed the stored policy")
+	}
+	bootDenies(t, e, "after a rejection (it must not end the pending reset)")
+
+	e.apply(good(t, 4))
+	if s := e.snap(); strings.Join(s.others, ",") != "apply.log.broken-1" {
+		t.Errorf("data dir has %v, want only the one kept file (no second reset)", s.others)
+	}
+	if got := keptFile(t, e.dir, 1); !bytes.Equal(got, nb) {
+		t.Errorf("broken-1 changed")
+	}
+	raw, _ = os.ReadFile(lp)
+	ents, err := applylog.Read(bytes.NewReader(raw))
+	if err != nil || len(ents) < 2 || ents[0].Self == "" || ents[0].Reset.File != "apply.log.broken-1" || ents[len(ents)-1].To != 4 || ents[len(ents)-1].Result != "" {
+		t.Errorf("chain after the late recovery: %+v %v", ents, err)
+	}
+	if ents != nil && string(applylog.Encode(ents[0]))+"\n" != string(first) {
+		t.Errorf("the reset entry was rewritten")
+	}
+	storedVersionIs(t, e.dir, 4)
+	bootEnforces(t, e, "late recovery")
+}
+
+// A crash between making the kept name and replacing the log leaves apply.log broken and a hard link to it
+// under broken-1. The next reset reuses that file instead of keeping the evidence twice.
+func TestImportCrashBeforeRenameReusesKeptFile(t *testing.T) {
+	e := newImp(t)
+	nb := e.brokenAt(brokenLogCases[3].f)
+	if err := os.Link(filepath.Join(e.dir, "apply.log"), filepath.Join(e.dir, "apply.log.broken-1")); err != nil {
+		t.Skipf("hard links not available here: %v", err)
+	}
+	e.apply(good(t, 3))
+	if got := keptFile(t, e.dir, 1); !bytes.Equal(got, nb) {
+		t.Errorf("broken-1 is not the broken log")
+	}
+	if s := e.snap(); strings.Join(s.others, ",") != "apply.log.broken-1" {
+		t.Errorf("data dir has %v, want one kept file", s.others)
+	}
+	storedVersionIs(t, e.dir, 3)
+}
+
+// A forged reset entry never verifies where the doc says Decode refuses it: not mid-chain, not on an applied entry,
+// not with an odd file name, reason, version or result. Either Append refuses it or the log no longer verifies.
+func TestForgedResetEntriesNeverVerify(t *testing.T) {
+	ok := applylog.ResetInfo{Seq: 2, File: "apply.log.broken-1", Reason: applylog.ReasonChainBroken}
+	with := func(r applylog.ResetInfo) applylog.ResetInfo { return r }
+	cases := []struct {
+		name  string
+		prior int // normal entries before it
+		e     applylog.Entry
+	}{
+		{"mid-chain reset on seq 3", 2, applylog.Entry{To: 0, Result: wire.ErrTampered, Reset: ok}},
+		{"reset on seq 2 after one entry", 1, applylog.Entry{To: 0, Result: wire.ErrTampered, Reset: ok}},
+		{"first entry but applied (result empty)", 0, applylog.Entry{From: 2, To: 0, Reset: ok}},
+		{"first entry with to != 0", 0, applylog.Entry{From: 2, To: 3, Result: wire.ErrTampered, Reset: ok}},
+		{"first entry with result not_newer", 0, applylog.Entry{From: 2, Result: wire.ErrNotNewer, Reset: ok}},
+		{"file name evil", 0, applylog.Entry{From: 2, Result: wire.ErrTampered, Reset: applylog.ResetInfo{Seq: 2, File: "evil", Reason: applylog.ReasonChainBroken}}},
+		{"file name with a path", 0, applylog.Entry{From: 2, Result: wire.ErrTampered, Reset: applylog.ResetInfo{Seq: 2, File: "../apply.log.broken-1", Reason: applylog.ReasonChainBroken}}},
+		{"file name absolute", 0, applylog.Entry{From: 2, Result: wire.ErrTampered, Reset: applylog.ResetInfo{Seq: 2, File: "/etc/passwd", Reason: applylog.ReasonChainBroken}}},
+		{"file name broken-0", 0, applylog.Entry{From: 2, Result: wire.ErrTampered, Reset: applylog.ResetInfo{Seq: 2, File: "apply.log.broken-0", Reason: applylog.ReasonChainBroken}}},
+		{"file name broken- (no number)", 0, applylog.Entry{From: 2, Result: wire.ErrTampered, Reset: applylog.ResetInfo{Seq: 2, File: "apply.log.broken-", Reason: applylog.ReasonChainBroken}}},
+		{"file name broken-x", 0, applylog.Entry{From: 2, Result: wire.ErrTampered, Reset: applylog.ResetInfo{Seq: 2, File: "apply.log.broken-x", Reason: applylog.ReasonChainBroken}}},
+		{"file name broken-1/../x", 0, applylog.Entry{From: 2, Result: wire.ErrTampered, Reset: applylog.ResetInfo{Seq: 2, File: "apply.log.broken-1/../x", Reason: applylog.ReasonChainBroken}}},
+		{"file name with a newline", 0, applylog.Entry{From: 2, Result: wire.ErrTampered, Reset: applylog.ResetInfo{Seq: 2, File: "apply.log.broken-1\n", Reason: applylog.ReasonChainBroken}}},
+		{"unknown reason", 0, applylog.Entry{From: 2, Result: wire.ErrTampered, Reset: with(applylog.ResetInfo{Seq: 2, File: "apply.log.broken-1", Reason: "because"})}},
+		{"empty reason", 0, applylog.Entry{From: 2, Result: wire.ErrTampered, Reset: applylog.ResetInfo{Seq: 2, File: "apply.log.broken-1"}}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			p := filepath.Join(t.TempDir(), "apply.log")
+			clk := clock.NewFake(time.Date(2026, 11, 6, 9, 0, 0, 0, time.UTC))
+			l, err := applylog.Open(p, clk)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for i := 0; i < c.prior; i++ {
+				if _, err := l.Append(applylog.Entry{From: uint64(i), To: uint64(i + 1)}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before, _ := os.ReadFile(p)
+			_, aerr := l.Append(c.e)
+			l.Close()
+			after, _ := os.ReadFile(p)
+			if aerr != nil {
+				if !bytes.Equal(before, after) {
+					t.Errorf("Append refused the forged reset (%v) but changed the file", aerr)
+				}
+				return
+			}
+			if ents, err := applylog.Read(bytes.NewReader(after)); err == nil {
+				t.Errorf("a forged reset entry was written AND verifies: %+v", ents[len(ents)-1])
+			}
+			if _, err := applylog.Open(p, clk); err == nil {
+				t.Errorf("a log with a forged reset entry opens")
+			}
+		})
+	}
+
+	// the same forgery by hand on the bytes of a good log: a reset key spliced into a line breaks the chain
+	t.Run("reset key spliced into good lines", func(t *testing.T) {
+		p := filepath.Join(t.TempDir(), "apply.log")
+		l, err := applylog.Open(p, clock.NewFake(time.Date(2026, 11, 6, 9, 0, 0, 0, time.UTC)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := 0; i < 3; i++ {
+			if _, err := l.Append(applylog.Entry{From: uint64(i), To: uint64(i + 1)}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		l.Close()
+		raw, _ := os.ReadFile(p)
+		lines := bytes.SplitAfter(bytes.TrimSuffix(raw, []byte("\n")), []byte("\n"))
+		for i := range lines {
+			if i < len(lines)-1 && !bytes.HasSuffix(lines[i], []byte("\n")) {
+				t.Fatalf("unexpected log layout")
+			}
+		}
+		for i := range lines {
+			forged := append([][]byte(nil), lines...)
+			forged[i] = bytes.Replace(forged[i], []byte(`,"prev":`), []byte(`,"reset":{"seq":9,"file":"apply.log.broken-1","reason":"truncated"},"prev":`), 1)
+			if bytes.Equal(forged[i], lines[i]) {
+				t.Fatalf("splice did not apply to %q", lines[i])
+			}
+			joined := append(bytes.Join(forged, nil), '\n')
+			if _, err := applylog.Read(bytes.NewReader(joined)); err == nil {
+				t.Errorf("a reset key spliced into line %d verifies", i+1)
+			}
+		}
+	})
+}

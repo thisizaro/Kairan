@@ -16,13 +16,19 @@
 //	kairanctl rollout rollback -from OLD -version N -out payload.json [-validity 72h]
 //	                           [-key A.key -key2 B.key -env-out envelope.json]
 //	kairanctl fleet    CONN -tenant ID
-//	kairanctl evidence export CONN -tenant ID [-proxy ID] [-out FILE]
+//	kairanctl evidence export CONN -tenant ID [-proxy ID] [-applylog PROXY=FILE]... [-out FILE]
+//	kairanctl verify-applylog -in FILE
 //
 // CONN is: -url https://cp.example [-ca-file ca.pem] [-allow-plaintext]
 // [-token-file FILE]. The admin token is read from the environment variable
 // KCTL_ADMIN_TOKEN or from a file (-token-file, or KCTL_ADMIN_TOKEN_FILE),
 // never from a flag, because flags show in the process list. The URL may
 // also come from KCTL_CP_URL.
+//
+// evidence export with -applylog cross-checks the control plane's timeline
+// against each proxy's own apply log and prints a FLAG line for every version,
+// seq or head mismatch and every anchor regression (exit 1). A count of
+// timeline entries the control plane dropped is a WARNING, not a mismatch.
 //
 // Exit codes: 0 success, 1 the command was refused or failed, 2 bad usage.
 // Errors are printed in English and Japanese (PRD J7).
@@ -70,7 +76,8 @@ const (
   kairanctl rollout rollback -from OLD -version N -out payload.json [-validity 72h]
                              [-key A.key -key2 B.key -env-out envelope.json]
   kairanctl fleet    CONN -tenant ID
-  kairanctl evidence export CONN -tenant ID [-proxy ID] [-out FILE]
+  kairanctl evidence export CONN -tenant ID [-proxy ID] [-applylog PROXY=FILE]... [-out FILE]
+  kairanctl verify-applylog -in FILE
 
   CONN: -url https://cp.example [-ca-file ca.pem] [-allow-plaintext] [-token-file FILE]
   The admin token comes from KCTL_ADMIN_TOKEN or a token file
@@ -87,8 +94,9 @@ func main() {
 // carries key material or payload text.
 type cliError struct {
 	en, ja string
-	usage  bool  // exit 2 instead of 1
-	cause  error // for errors.Is in tests; not printed
+	usage  bool   // exit 2 instead of 1
+	help   string // usage text to print after the message; default is helpSummary
+	cause  error  // for errors.Is in tests; not printed
 }
 
 func (e *cliError) Error() string { return e.en }
@@ -120,7 +128,11 @@ func run(args []string, s streams) int {
 	}
 	fmt.Fprintf(s.err, "error: %s\nエラー: %s\n", ce.en, ce.ja)
 	if ce.usage {
-		fmt.Fprint(s.err, "\n"+helpSummary)
+		if ce.help != "" {
+			fmt.Fprint(s.err, "\n"+ce.help)
+		} else {
+			fmt.Fprint(s.err, "\n"+helpSummary)
+		}
 		return exitUsage
 	}
 	return exitFailed
@@ -142,6 +154,8 @@ func dispatch(args []string, s streams) error {
 			return usageErr("unknown policy command (try: policy new)", "policy のサブコマンドが不明です (policy new を使います)")
 		}
 		return cmdPolicyNew(rest[1:], s)
+	case "verify-applylog":
+		return cmdVerifyApplylog(rest, s)
 	case "sign":
 		return cmdSign(rest, s)
 	case "approve":
@@ -158,20 +172,25 @@ func dispatch(args []string, s streams) error {
 	return usageErr("unknown command", "不明なコマンドです")
 }
 
-// flagExit carries an exit code chosen while parsing flags (-h is 0, a bad
-// flag is 2); the flag package has already printed its message.
+// flagExit ends the command with an exit code chosen while parsing flags (-h
+// is 0); the usage has already been printed.
 type flagExit struct{ code int }
 
 func (e *flagExit) Error() string { return "flag exit" }
 
-// parseFlags parses args into fs. Stray positional arguments are a usage error.
+// parseFlags parses args into fs. The flag package's own output goes nowhere:
+// its errors are English only and repeat what was typed, so they are mapped to
+// bilingual messages (flagError). -h prints the subcommand's usage and exits 0.
+// Stray positional arguments are a usage error.
 func parseFlags(fs *flag.FlagSet, args []string, s streams) error {
-	fs.SetOutput(s.err)
+	fs.SetOutput(io.Discard)
+	fs.Usage = func() {}
 	if err := fs.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
+		if isHelp(err) {
+			fmt.Fprint(s.out, usageFor(fs))
 			return &flagExit{exitOK}
 		}
-		return &flagExit{exitUsage}
+		return flagError(fs, err)
 	}
 	if fs.NArg() != 0 {
 		return usageErr("unexpected argument", "余分な引数があります")
