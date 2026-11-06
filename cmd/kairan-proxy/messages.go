@@ -40,14 +40,40 @@ func usageMsg(en, ja string) *cliError { return &cliError{en: en, ja: ja, usage:
 // cmdLineMsg is a bad command line (exit status 2, followed by the usage).
 func cmdLineMsg(en, ja string) *cliError { return &cliError{en: en, ja: ja, usage: true, help: true} }
 
+// osMsg is a runtime failure with a cause: the English line adds the reason
+// (errText) and the Japanese line the class (errClassJa). Neither holds a path
+// or a value, and the Japanese line holds no library text (M-D65).
+func osMsg(en, ja string, err error) *cliError {
+	return msg(en+": "+errText(err), ja+": "+errClassJa(err))
+}
+
+// osUsageMsg is osMsg for a bad config (exit status 2).
+func osUsageMsg(en, ja string, err error) *cliError {
+	return usageMsg(en+": "+errText(err), ja+": "+errClassJa(err))
+}
+
+// oneLine makes sure a message cannot start a second line or carry a control
+// byte, whatever was put into it.
+func oneLine(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; c < 0x20 || c == 0x7f {
+			b.WriteString(fmt.Sprintf(`\x%02x`, c))
+		} else {
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
+}
+
 // report prints err as an English line and a Japanese line.
 func report(stderr io.Writer, err error) {
 	var e *cliError
 	if !errors.As(err, &e) {
 		// Not expected: every error is made by msg, usageMsg or cmdLineMsg.
-		e = msg("unexpected failure: "+err.Error(), "予期しない失敗です: "+err.Error())
+		e = osMsg("unexpected failure", "予期しない失敗です", err)
 	}
-	fmt.Fprintf(stderr, "kairan-proxy: error: %s\nkairan-proxy: エラー: %s\n", e.en, e.ja)
+	fmt.Fprintf(stderr, "kairan-proxy: error: %s\nkairan-proxy: エラー: %s\n", oneLine(e.en), oneLine(e.ja))
 	if e.help {
 		fmt.Fprint(stderr, usageText)
 	}
@@ -65,24 +91,16 @@ const usageText = `usage: kairan-proxy -config FILE [-import FILE]
         オフラインの署名付きバンドルをデータディレクトリに適用して終了する
 `
 
-// short cuts a flag name to a printable length.
-func short(s string) string {
-	if len(s) > 40 {
-		s = strings.ToValidUTF8(s[:40], "") + "..."
-	}
-	return s
-}
-
 // flagError turns an error of the flag package (English only) into a message
 // in both languages. It never repeats the value the person typed.
 func flagError(err error) *cliError {
 	s := err.Error()
 	switch {
 	case strings.HasPrefix(s, "flag provided but not defined: "):
-		f := short(strings.TrimPrefix(s, "flag provided but not defined: "))
+		f := esc(strings.TrimPrefix(s, "flag provided but not defined: "))
 		return cmdLineMsg("unknown flag: "+f, "未知のフラグです: "+f)
 	case strings.HasPrefix(s, "flag needs an argument: "):
-		f := short(strings.TrimPrefix(s, "flag needs an argument: "))
+		f := esc(strings.TrimPrefix(s, "flag needs an argument: "))
 		return cmdLineMsg("flag needs an argument: "+f, "フラグに引数が必要です: "+f)
 	}
 	return cmdLineMsg("a flag has an invalid value", "フラグの値が正しくありません")

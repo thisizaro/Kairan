@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"io"
 	"os"
 	"strings"
@@ -87,10 +86,5 @@ func readTokenFile(path string) (string, *cliError) {
 }
 
 func tokenFileErr(err error) *cliError {
-	reason := err.Error()
-	var pe *os.PathError
-	if errors.As(err, &pe) {
-		reason = pe.Err.Error()
-	}
-	return msg("admin token file: "+reason, "管理トークンファイル: "+reason)
+	return osMsg("admin token file", "管理トークンファイル", err)
 }

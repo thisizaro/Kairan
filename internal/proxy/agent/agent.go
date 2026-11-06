@@ -154,6 +154,7 @@ func New(cfg Config, st *store.Store, al *applylog.Log, h *enforce.Holder, clk c
 	if stats == nil {
 		stats = &Stats{}
 	}
+	cfg.Guard.SetLog(log)
 	a := &Agent{
 		cfg: cfg, st: st, hold: h, clk: clk, hc: hc, log: log, stats: stats,
 		pollTimeout:   wire.PollClientTimeout,

@@ -108,9 +108,24 @@ func TestEveryMessagePathInTheSourceIsBilingual(t *testing.T) {
 	}
 	// helpers that take (english, japanese) string pairs, by argument index
 	pairs := map[string][][2]int{
-		"msg":      {{0, 1}},
-		"usageMsg": {{0, 1}},
-		"bad":      {{1, 2}},
+		"msg":        {{0, 1}},
+		"usageMsg":   {{0, 1}},
+		"cmdLineMsg": {{0, 1}},
+		"osMsg":      {{0, 1}},
+		"osUsageMsg": {{0, 1}},
+		"bad":        {{1, 2}},
+	}
+	// M-D65: no message holds a configured path or value, or library text.
+	// err.Error() is allowed only where the text is made safe or is the flag
+	// package's own (its flag name is echoed through esc).
+	errorCallers := map[string]bool{"errText": true, "flagError": true}
+	// the helpers that turn an err into the two lines (errText, errClassJa)
+	causeHelpers := map[string]bool{"osMsg": true, "osUsageMsg": true}
+	// identifiers that hold a configured path, address, token or other value
+	valueNames := map[string]bool{
+		"path": true, "file": true, "dir": true, "cfgPath": true, "importPath": true, "DataDir": true,
+		"CAFile": true, "Listen": true, "MetricsListen": true, "Token": true, "addr": true, "reason": true,
+		"CP": true, "Upstream": true, "APIKeys": true, "ProxyID": true, "Tenant": true,
 	}
 	// the only functions allowed to write to stdout or stderr
 	printers := map[string]bool{"report": true, "run": true, "runLocal": true, "importBundle": true}
@@ -144,6 +159,29 @@ func TestEveryMessagePathInTheSourceIsBilingual(t *testing.T) {
 								continue
 							}
 							calls[fn.Name]++
+							for _, arg := range []ast.Expr{call.Args[p[0]], call.Args[p[1]]} {
+								ast.Inspect(arg, func(n ast.Node) bool {
+									switch n := n.(type) {
+									case *ast.Ident:
+										if valueNames[n.Name] {
+											t.Errorf("%s: %s: a message names a configured value (%s)", pos, fn.Name, n.Name)
+										}
+									case *ast.CallExpr:
+										if se, ok := n.Fun.(*ast.SelectorExpr); ok && se.Sel.Name == "Error" {
+											t.Errorf("%s: %s: err.Error() in a message: use osMsg(en, ja, err)", pos, fn.Name)
+										}
+									}
+									return true
+								})
+							}
+							if !causeHelpers[fd.Name.Name] {
+								ast.Inspect(call.Args[p[1]], func(n ast.Node) bool {
+									if id, ok := n.(*ast.Ident); ok && (id.Name == "err" || id.Name == "reason") {
+										t.Errorf("%s: %s: the Japanese text holds %s: library text must not reach the Japanese line", pos, fn.Name, id.Name)
+									}
+									return true
+								})
+							}
 							if !englishArg(call.Args[p[0]]) {
 								t.Errorf("%s: %s: English text holds Japanese or other non-ASCII", pos, fn.Name)
 							}
@@ -156,6 +194,9 @@ func TestEveryMessagePathInTheSourceIsBilingual(t *testing.T) {
 						t.Errorf("%s: %s writes an English-only message", pos, fn.Name)
 					}
 				case *ast.SelectorExpr:
+					if fn.Sel.Name == "Error" && len(call.Args) == 0 && !errorCallers[fd.Name.Name] {
+						t.Errorf("%s: .Error() in %s: error text can hold a path or a value; use errText(err)", pos, fd.Name.Name)
+					}
 					x, _ := fn.X.(*ast.Ident)
 					if x == nil {
 						return true
@@ -208,7 +249,8 @@ func TestEveryMessagePathInTheSourceIsBilingual(t *testing.T) {
 		}
 	}
 	// the scan must really see the code it guards
-	if calls["msg"] < 25 || calls["usageMsg"] < 3 || calls["bad"] < 25 || calls["Fprint"] < 3 {
+	if calls["msg"] < 8 || calls["usageMsg"] < 8 || calls["osMsg"] < 8 || calls["osUsageMsg"] < 4 ||
+		calls["cmdLineMsg"] < 6 || calls["bad"] < 25 || calls["Fprint"] < 3 {
 		t.Errorf("the scan saw too little code: %v", calls)
 	}
 }
