@@ -429,6 +429,44 @@ func TestMsgSameInEveryLocale(t *testing.T) {
 
 // ---- usage and flag errors ----
 
+// flagNameCases are the cases whose typed text is a flag NAME (M-D65, Q-D33 allows echoing it escaped and
+// truncated to 128 bytes).
+var flagNameCases = map[string]bool{
+	"unknown flag": true, "unknown flag with canary name": true, "unknown flag double dash": true,
+	"unknown flag after good config": true, "flag with a newline in its name": true,
+	"flag with an escape in its name": true, "long flag name": true,
+}
+
+// checkEscapedBoundedEcho: exactly one English error line plus one Japanese error line (the usage is
+// separate), no raw control byte (bilingual checks that too), a control byte of the typed name shown as
+// \xNN, and each error line bounded (the name is cut at 128 bytes, so a line cannot grow with the input).
+func checkEscapedBoundedEcho(t *testing.T, name, out string, args []string) {
+	t.Helper()
+	en, ja := 0, 0
+	for _, ln := range strings.Split(out, "\n") {
+		switch {
+		case strings.HasPrefix(ln, "kairan-proxy: error:"):
+			en++
+			if len(ln) > 512 {
+				t.Errorf("%s: English error line is %d bytes: the echoed name is not truncated to 128 bytes", name, len(ln))
+			}
+		case strings.HasPrefix(ln, "kairan-proxy: エラー:"):
+			ja++
+			if len(ln) > 640 {
+				t.Errorf("%s: Japanese error line is %d bytes: the echoed name is not truncated", name, len(ln))
+			}
+		}
+	}
+	if en != 1 || ja != 1 {
+		t.Errorf("%s: %d English and %d Japanese error lines, want exactly one of each: %s", name, en, ja, clip(out))
+	}
+	for _, a := range args {
+		if strings.ContainsAny(a, "\x1b\n") && !strings.Contains(out, `\x1b`) && !strings.Contains(out, `\n`) && !strings.Contains(out, `\x0a`) {
+			t.Errorf("%s: a control byte in the typed flag name is not shown escaped (as \\xNN): %s", name, clip(out))
+		}
+	}
+}
+
 func TestMsgUsageAndFlagErrors(t *testing.T) {
 	good := cfgPath(t, canaryCfg(t).bytes())
 	missing := filepath.Join(t.TempDir(), "CANARYPATH", "nope.json")
@@ -484,12 +522,27 @@ func TestMsgUsageAndFlagErrors(t *testing.T) {
 			if r.stdout != "" {
 				t.Errorf("standard output is not empty: %s", clip(r.stdout))
 			}
-			st := bilingual(t, c.name, r.err, commonForbid...)
+			forbid := commonForbid
+			if flagNameCases[c.name] {
+				// M-D65 (Q-D33): a typed flag NAME may be echoed, but only escaped and bounded. The marker
+				// CANARY inside the flag name itself is therefore allowed; every other secret and value stays forbidden.
+				forbid = nil
+				for _, f := range commonForbid {
+					if f != "CANARY" {
+						forbid = append(forbid, f)
+					}
+				}
+				forbid = append(forbid, "CANARYDIR", "CANARYPATH", "CANARYFIFO", "CANARYPOS", "CANARYCP", "CANARYUP", "CANARYVAL")
+			}
+			st := bilingual(t, c.name, r.err, forbid...)
 			if st.pairs < 1 {
 				t.Errorf("no English+Japanese error pair: %s", clip(r.err))
 			}
 			if len(r.err) > 8192 {
 				t.Errorf("%d bytes of error output: typed text is echoed unbounded", len(r.err))
+			}
+			if flagNameCases[c.name] {
+				checkEscapedBoundedEcho(t, c.name, r.err, c.args)
 			}
 			if c.usage && (!strings.Contains(r.err, "usage:") || !strings.Contains(r.err, "使い方")) {
 				t.Errorf("a bad command line must print the usage in both languages: %s", clip(r.err))
