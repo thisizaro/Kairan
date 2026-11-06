@@ -108,18 +108,10 @@ func loadConfig(path string) (*config, *cliError) {
 func readSmallFile(path string, limit int, what, whatJa, tooBig, tooBigJa string) ([]byte, *cliError) {
 	b, err := openRegular(path, limit)
 	if err != nil {
-		switch {
-		case errors.Is(err, errNotRegular):
-			return nil, msg(what+": not a regular file", whatJa+": 通常のファイルではありません")
-		case errors.Is(err, errTooBig):
+		if errors.Is(err, errTooBig) {
 			return nil, msg(tooBig, tooBigJa)
 		}
-		reason := err.Error()
-		var pe *os.PathError
-		if errors.As(err, &pe) {
-			reason = pe.Err.Error()
-		}
-		return nil, msg(what+": "+reason, whatJa+": "+reason)
+		return nil, osMsg(what, whatJa, err)
 	}
 	return b, nil
 }
@@ -169,25 +161,28 @@ func parseConfig(data []byte) (*config, *cliError) {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&raw); err != nil {
-		var te *json.UnmarshalTypeError
-		switch {
-		case errors.As(err, &te):
-			f := short(te.Field)
-			return nil, msg(f+" has the wrong type", f+" の型が正しくありません")
-		case strings.HasPrefix(err.Error(), "json: unknown field "):
-			f := short(strings.Trim(strings.TrimPrefix(err.Error(), "json: unknown field "), `"`))
-			return nil, msg("unknown field: "+f, "未知のフィールドです: "+f)
-		}
-		return nil, msg("config file is not valid JSON", "設定ファイルが正しい JSON ではありません")
+		return nil, decodeError(err)
 	}
 	return validate(raw)
 }
 
-func short(s string) string {
-	if len(s) > 40 {
-		s = strings.ToValidUTF8(s[:40], "") + "..."
+// decodeError turns an error of encoding/json into a message. The name of a
+// field comes from the file, so it is echoed only through esc.
+func decodeError(err error) *cliError {
+	var te *json.UnmarshalTypeError
+	switch s := err.Error(); {
+	case errors.As(err, &te):
+		f := esc(te.Field)
+		return msg(f+" has the wrong type", f+" の型が正しくありません")
+	case strings.HasPrefix(s, "json: unknown field "):
+		name, qerr := strconv.Unquote(strings.TrimPrefix(s, "json: unknown field "))
+		if qerr != nil {
+			name = strings.TrimPrefix(s, "json: unknown field ")
+		}
+		f := esc(name)
+		return msg("unknown field: "+f, "未知のフィールドです: "+f)
 	}
-	return s
+	return msg("config file is not valid JSON", "設定ファイルが正しい JSON ではありません")
 }
 
 // scanJSON walks the token stream, so that it can see what json.Unmarshal
@@ -223,12 +218,12 @@ func scanJSON(data []byte) *cliError {
 				if len(stack) >= maxJSONDepth {
 					return msg("config file is nested too deeply", "設定ファイルの入れ子が深すぎます")
 				}
-				f := frame{obj: v == '{', wantKey: v == '{'}
-				if f.obj {
-					f.keys = map[string]bool{}
-					f.tenantNames = len(stack) == 1 && top.pending == "tenants"
+				fr := frame{obj: v == '{', wantKey: v == '{'}
+				if fr.obj {
+					fr.keys = map[string]bool{}
+					fr.tenantNames = len(stack) == 1 && top.pending == "tenants"
 				}
-				stack = append(stack, f)
+				stack = append(stack, fr)
 				continue
 			}
 			stack = stack[:len(stack)-1]
@@ -238,14 +233,14 @@ func scanJSON(data []byte) *cliError {
 		case string:
 			if top.obj && top.wantKey {
 				if top.keys[v] {
-					f := short(v)
+					f := esc(v)
 					return msg("config file repeats a field: "+f, "設定ファイルに重複したフィールドがあります: "+f)
 				}
 				top.keys[v] = true
 				top.pending, top.wantKey = v, false
 				if !top.tenantNames {
 					if v != strings.ToLower(v) {
-						f := short(v)
+						f := esc(v)
 						return msg("field names must be lower case: "+f, "フィールド名は小文字でなければなりません: "+f)
 					}
 					if privateName(v) {

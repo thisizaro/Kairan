@@ -52,7 +52,7 @@ func main() {
 }
 
 func report(stderr io.Writer, e *cliError) {
-	fmt.Fprintf(stderr, "kairan-cp: error: %s\nkairan-cp: エラー: %s\n", e.en, e.ja)
+	fmt.Fprintf(stderr, "kairan-cp: error: %s\nkairan-cp: エラー: %s\n", oneLine(e.en), oneLine(e.ja))
 }
 
 // usageText is the help text, in both languages.
@@ -76,10 +76,10 @@ func flagError(err error) *cliError {
 	s := err.Error()
 	switch {
 	case strings.HasPrefix(s, "flag provided but not defined: "):
-		f := short(strings.TrimPrefix(s, "flag provided but not defined: "))
+		f := esc(strings.TrimPrefix(s, "flag provided but not defined: "))
 		return msg("unknown flag: "+f, "未知のフラグです: "+f)
 	case strings.HasPrefix(s, "flag needs an argument: "):
-		f := short(strings.TrimPrefix(s, "flag needs an argument: "))
+		f := esc(strings.TrimPrefix(s, "flag needs an argument: "))
 		return msg("flag needs an argument: "+f, "フラグに引数が必要です: "+f)
 	}
 	return msg("a flag has an invalid value", "フラグの値が正しくありません")
@@ -145,11 +145,11 @@ func serve(cfg *config, token string, stderr io.Writer) *cliError {
 	st, err := store.OpenFiles(cfg.DataDir)
 	if err != nil {
 		if errors.Is(err, store.ErrCorrupt) {
-			file := strings.TrimPrefix(err.Error(), store.ErrCorrupt.Error()+": ")
+			file := esc(corruptFile(err))
 			return msg("damaged state file: "+file+" (restore it from a backup or move it away; the control plane will not start with it)",
 				"状態ファイルが壊れています: "+file+" (バックアップから戻すか、別の場所に移してください。このままでは起動しません)")
 		}
-		return msg("cannot open data_dir: "+err.Error(), "data_dir を開けません: "+err.Error())
+		return osMsg("cannot open data_dir", "data_dir を開けません", err)
 	}
 
 	reg := obs.NewRegistry()
@@ -260,7 +260,7 @@ func serve(cfg *config, token string, stderr io.Writer) *cliError {
 	wg.Wait()
 	say(log, slog.LevelInfo, evStopped)
 	if serveErr != nil {
-		return msg("the server stopped: "+serveErr.Error(), "サーバーが停止しました: "+serveErr.Error())
+		return osMsg("the server stopped", "サーバーが停止しました", serveErr)
 	}
 	return nil
 }
@@ -293,12 +293,7 @@ func say(log *slog.Logger, level slog.Level, ev event, attrs ...any) {
 }
 
 func listenErr(key string, err error) *cliError {
-	reason := err.Error()
-	var oe *net.OpError
-	if errors.As(err, &oe) && oe.Err != nil {
-		reason = oe.Err.Error()
-	}
-	return msg("cannot listen for "+key+": "+reason, key+" の待ち受けを開始できません: "+reason)
+	return osMsg("cannot listen for "+key, key+" の待ち受けを開始できません", err)
 }
 
 // loopback reports whether addr (host:port) is bound to the loopback
