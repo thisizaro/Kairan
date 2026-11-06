@@ -32,11 +32,11 @@ var lockWait = 5 * time.Second
 // function is called or the process exits.
 func lockDataDir(dir string) (func(), error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return nil, msg("cannot create data_dir: "+err.Error(), "data_dir を作成できません: "+err.Error())
+		return nil, osMsg("cannot create data_dir", "data_dir を作成できません", err)
 	}
 	f, err := os.OpenFile(filepath.Join(dir, lockFile), os.O_RDWR|os.O_CREATE|syscall.O_NOFOLLOW, 0o600)
 	if err != nil {
-		return nil, msg("cannot open the lock file in data_dir: "+err.Error(), "data_dir のロックファイルを開けません: "+err.Error())
+		return nil, osMsg("cannot open the lock file in data_dir", "data_dir のロックファイルを開けません", err)
 	}
 	deadline := time.Now().Add(lockWait)
 	for {
@@ -50,7 +50,7 @@ func lockDataDir(dir string) (func(), error) {
 				return nil, msg("the data directory is in use by another kairan-proxy",
 					"データディレクトリは別の kairan-proxy が使用中です")
 			}
-			return nil, msg("cannot lock data_dir: "+err.Error(), "data_dir をロックできません: "+err.Error())
+			return nil, osMsg("cannot lock data_dir", "data_dir をロックできません", err)
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
@@ -120,19 +120,19 @@ func rejection(code wire.ErrorCode) error {
 // the agent boots Tampered and applies nothing.
 func openData(cfg *Config, clk clock.Clock, log *slog.Logger) (st *store.Store, guard *agent.ClockGuard, al *applylog.Log, logErr error, err error) {
 	if st, err = store.Open(cfg.DataDir); err != nil {
-		return nil, nil, nil, nil, msg("cannot open data_dir: "+err.Error(), "data_dir を開けません: "+err.Error())
+		return nil, nil, nil, nil, osMsg("cannot open data_dir", "data_dir を開けません", err)
 	}
 	guard, err = agent.OpenClockGuard(clk, cfg.DataDir)
 	switch {
 	case errors.Is(err, agent.ErrHighWaterCorrupt):
 		say(log, slog.LevelWarn, evHighWaterCorrupt)
 	case err != nil:
-		return nil, nil, nil, nil, msg("cannot open the clock high-water file: "+err.Error(), "ハイウォーターファイルを開けません: "+err.Error())
+		return nil, nil, nil, nil, osMsg("cannot open the clock high-water file in data_dir", "data_dir のハイウォーターファイルを開けません", err)
 	}
 	al, err = applylog.Open(filepath.Join(cfg.DataDir, applyLogFile), clk)
 	if err != nil {
 		// Do not repair or work around it: boot as Tampered, apply nothing.
-		say(log, slog.LevelError, evApplyLogBad, "err", err.Error())
+		say(log, slog.LevelError, evApplyLogBad, "err", errText(err))
 		return st, guard, nil, err, nil
 	}
 	return st, guard, al, nil, nil
@@ -166,25 +166,26 @@ func importBundle(cfg *Config, file string, stderr io.Writer) error {
 	acfg := agent.Config{
 		CP: cfg.CP, Tenant: cfg.Tenant, ProxyID: cfg.ProxyID, Token: cfg.Token, Root: cfg.Root,
 		Skew: cfg.Skew, Guard: guard, AllowPlaintext: cfg.AllowPlaintext, LogOpenErr: logErr,
+		LogPath: filepath.Join(cfg.DataDir, applyLogFile),
 	}
 	// The client is never used: an import makes no network call.
 	ag, err := agent.New(acfg, st, al, &enforce.Holder{}, clk, &http.Client{}, log, &agent.Stats{})
 	if err != nil {
-		return usageMsg("invalid configuration: "+err.Error(), "設定が正しくありません: "+err.Error())
+		return osUsageMsg("invalid configuration", "設定が正しくありません", err)
 	}
 	if err := ag.Boot(); err != nil {
-		return msg("cannot start: "+err.Error(), "起動できません: "+err.Error())
+		return osMsg("cannot start", "起動できません", err)
 	}
 	got, err := ag.Import(data)
 	if serr := guard.Save(); serr != nil {
-		say(log, slog.LevelWarn, evImportHighWaterLost, "err", serr.Error())
+		say(log, slog.LevelWarn, evImportHighWaterLost, "err", errText(serr))
 	}
 	var ie *agent.ImportError
 	switch {
 	case errors.As(err, &ie):
 		return rejection(ie.Code)
 	case err != nil:
-		return msg("import failed: "+err.Error(), "取り込みに失敗しました: "+err.Error())
+		return osMsg("import failed", "取り込みに失敗しました", err)
 	}
 	fmt.Fprintf(stderr, "kairan-proxy: imported policy version %d (previous %d), hash %s; it is enforced when kairan-proxy starts\n"+
 		"kairan-proxy: ポリシー バージョン %d (以前: %d) を取り込みました。ハッシュ %s。kairan-proxy の起動時から適用されます\n",

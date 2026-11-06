@@ -54,6 +54,9 @@ func TestDecideBoot(t *testing.T) {
 		{"newer stored, expired: repair", ok(6, hash("c"), earlier), LogView{Seq: 5, AppliedVer: 5, AppliedHash: hash("a")}, state.BootExpired, true},
 		{"newer stored, empty log (crash on first apply)", ok(1, hash("c"), later), LogView{}, state.BootValid, true},
 		{"newer stored, log has only rejects", ok(2, hash("c"), later), LogView{Seq: 4}, state.BootValid, true},
+		{"reset pending, stored newer than the floor", ok(6, hash("c"), later), LogView{Seq: 1, AppliedVer: 5, ResetPending: true}, state.BootTampered, false},
+		{"reset pending, stored at the floor", ok(5, hash("a"), later), LogView{Seq: 1, AppliedVer: 5, ResetPending: true}, state.BootTampered, false},
+		{"reset pending, no file", Stored{}, LogView{Seq: 1, ResetPending: true}, state.BootTampered, false},
 		{"newer stored but newer-version verify failed", Stored{Found: true, Err: bad}, LogView{Seq: 5, AppliedVer: 5}, state.BootTampered, false},
 	}
 	for _, tc := range tests {

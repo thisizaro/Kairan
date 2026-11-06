@@ -9,12 +9,13 @@ import (
 
 // Counter names the agent itself increments (Stats.Inc).
 const (
-	MetricApplyOK       = "agent_apply_ok"       // an envelope was applied
-	MetricApplyRejected = "agent_apply_rejected" // an envelope was rejected or could not be persisted
-	MetricPollErrors    = "agent_poll_errors"    // a poll failed (network, bad status, unreadable body)
-	MetricStatusErrors  = "agent_status_errors"  // a status report was not delivered
-	MetricExpired       = "agent_policy_expired" // Enforcing -> SafeMode at effective_now
-	MetricBootTampered  = "agent_boot_tampered"  // boot ended in Tampered
+	MetricApplyOK       = "agent_apply_ok"        // an envelope was applied
+	MetricApplyRejected = "agent_apply_rejected"  // an envelope was rejected or could not be persisted
+	MetricPollErrors    = "agent_poll_errors"     // a poll failed (network, bad status, unreadable body)
+	MetricStatusErrors  = "agent_status_errors"   // a status report was not delivered
+	MetricExpired       = "agent_policy_expired"  // Enforcing -> SafeMode at effective_now
+	MetricBootTampered  = "agent_boot_tampered"   // boot ended in Tampered
+	MetricLogReset      = "agent_apply_log_reset" // a broken apply log was kept aside and a new chain started (P-13)
 )
 
 // Names the enforce package increments; the agent turns them into the call
