@@ -434,6 +434,12 @@ func FuzzLoggerNeverLeaksOrBreaks(f *testing.F) {
 	f.Add("k", strings.Repeat("a", 600)+canary, "m")
 	f.Add("", "", "")
 	f.Fuzz(func(t *testing.T, key, val, msg string) {
+		// The contract truncates string VALUES at MaxLogValueBytes; keys, group names and messages are
+		// chosen by the programmer and are not truncated (go doc obs). Keep them short here and bound the
+		// output by the value limit only: 512 bytes, up to 6x if every byte is escaped as \u00XX, ~4 times.
+		if len(key) > 64 || len(msg) > 512 {
+			return
+		}
 		b, l := newBuf()
 		l.Info(msg, key, val, slog.Group(key, slog.String(key, val)), slog.Any(key, []byte(val)))
 		l.With(key, val).WithGroup(key).Info(msg, key, val)
@@ -444,7 +450,7 @@ func FuzzLoggerNeverLeaksOrBreaks(f *testing.F) {
 				t.Fatalf("invalid JSON line %q: %v", ln, err)
 			}
 		}
-		if len(out) > 20000 {
+		if len(out) > 40000 {
 			t.Fatalf("output %d bytes for inputs of %d/%d/%d bytes: truncation not applied", len(out), len(key), len(val), len(msg))
 		}
 		if !utf8.Valid(b.Bytes()) {

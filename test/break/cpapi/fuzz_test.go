@@ -36,7 +36,14 @@ func fuzzCheck(t *testing.T, rec *httptest.ResponseRecorder, in []byte) {
 func fuzzDo(h http.Handler, method, target, token string, body []byte) *httptest.ResponseRecorder {
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
-	req := httptest.NewRequest(method, target, bytes.NewReader(body)).WithContext(ctx)
+	// http.NewRequest returns an error for an unparsable target (httptest.NewRequest panics): such an
+	// input cannot reach a handler through net/http either, so it is skipped (nil), not a CP bug.
+	req, err := http.NewRequestWithContext(ctx, method, target, bytes.NewReader(body))
+	if err != nil {
+		return nil
+	}
+	req.RequestURI = target
+	req.RemoteAddr = "192.0.2.1:1234"
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
@@ -53,7 +60,9 @@ func FuzzPublishBody(f *testing.F) {
 	f.Add([]byte(``))
 	f.Add([]byte(`{"Payload":"e30=","payload":"e30="}`))
 	f.Fuzz(func(t *testing.T, body []byte) {
-		fuzzCheck(t, fuzzDo(e.h, "POST", wire.PathPolicies, adminTok, body), body)
+		if rec := fuzzDo(e.h, "POST", wire.PathPolicies, adminTok, body); rec != nil {
+			fuzzCheck(t, rec, body)
+		}
 	})
 }
 
@@ -65,6 +74,9 @@ func FuzzStatusBody(f *testing.F) {
 	f.Add([]byte(`{"tenant":"bank-a","proxy_id":"p1","prompt":"x"}`))
 	f.Fuzz(func(t *testing.T, body []byte) {
 		rec := fuzzDo(e.h, "POST", wire.PathStatus, tokOf("p1"), body)
+		if rec == nil {
+			return
+		}
 		fuzzCheck(t, rec, body)
 		if rec.Code == 204 && rec.Body.Len() != 0 {
 			t.Fatalf("204 with a body")
@@ -78,7 +90,9 @@ func FuzzRolloutBody(f *testing.F) {
 	f.Add([]byte(`{"tenant":"bank-a","version":1,"canary_dwell_seconds":18446744073709551615}`))
 	f.Add([]byte(`{}`))
 	f.Fuzz(func(t *testing.T, body []byte) {
-		fuzzCheck(t, fuzzDo(e.h, "POST", wire.PathRollouts, adminTok, body), body)
+		if rec := fuzzDo(e.h, "POST", wire.PathRollouts, adminTok, body); rec != nil {
+			fuzzCheck(t, rec, body)
+		}
 	})
 }
 
@@ -90,9 +104,12 @@ func FuzzPollQuery(f *testing.F) {
 	f.Add("%00=%ff")
 	f.Fuzz(func(t *testing.T, qs string) {
 		if strings.ContainsAny(qs, " \r\n\x00#") {
-			return // not a valid request target; httptest.NewRequest would panic
+			return // not a valid request target
 		}
 		rec := fuzzDo(e.h, "GET", wire.PathPoll+"?"+qs, tokOf("p1"), nil)
+		if rec == nil {
+			return // unparsable request target (e.g. a control character): not deliverable
+		}
 		fuzzCheck(t, rec, []byte(qs))
 	})
 }
