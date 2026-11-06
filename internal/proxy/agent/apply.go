@@ -3,6 +3,7 @@ package agent
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"log/slog"
 	"time"
 
 	"kairan/internal/policy"
@@ -35,12 +36,26 @@ func (a *Agent) appliedVersionLocked() uint64 {
 // restarts). A new envelope must beat it, and it is the "have" of a poll.
 func (a *Agent) floorLocked() uint64 {
 	f := a.appliedVersionLocked()
-	if a.al != nil {
-		if v, _ := a.al.LastApplied(); v > f {
+	if al := a.alog(); al != nil {
+		if v, _ := al.LastApplied(); v > f {
 			f = v
 		}
+	} else {
+		f = max(f, a.brokenFloor)
 	}
 	return f
+}
+
+// lastApplied is the highest applied version for the "from" field of log
+// entries and results: the log's, or the floor of a broken log.
+func (a *Agent) lastApplied() uint64 {
+	if al := a.alog(); al != nil {
+		v, _ := al.LastApplied()
+		return v
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.brokenFloor
 }
 
 func payloadHash(p []byte) wire.Hash {
@@ -64,10 +79,7 @@ func (a *Agent) apply(env wire.Envelope, advisory uint64) bool {
 	a.mu.Lock()
 	floor := a.floorLocked()
 	a.mu.Unlock()
-	var from uint64
-	if a.al != nil {
-		from, _ = a.al.LastApplied()
-	}
+	from := a.lastApplied()
 
 	v, code, err := trust.Accept(env, a.cfg.Root, floor, now, a.cfg.Skew)
 	if err != nil {
@@ -78,19 +90,27 @@ func (a *Agent) apply(env wire.Envelope, advisory uint64) bool {
 		return false
 	}
 	ver, hash := v.Policy.Version, v.Hash
-	if a.al == nil { // nothing may be applied without a log that can record it
-		a.reject(wire.ErrPersist, ver, hash, from)
-		return false
+	al := a.alog()
+	if al == nil {
+		// The apply log is broken. A newer valid policy is the way out
+		// (ARCHITECTURE section 4): keep the broken file, start a new chain.
+		// Without a known log path nothing can be applied.
+		var ok bool
+		if al, ok = a.resetLog(ver, floor); !ok {
+			a.reject(wire.ErrPersist, ver, hash, from)
+			return false
+		}
+		from = a.lastApplied()
 	}
 	if err := a.st.Save(env); err != nil {
-		a.log.Error("apply: save failed", "version", ver, "err", err)
+		say(a.log, slog.LevelError, evSaveFailed, "version", ver, "err", err)
 		a.reject(wire.ErrPersist, ver, hash, from)
 		return false
 	}
-	if _, err := a.al.Append(applylog.Entry{From: from, To: ver, Hash: hash}); err != nil {
+	if _, err := al.Append(applylog.Entry{From: from, To: ver, Hash: hash}); err != nil {
 		// The file on disk is now newer than the log; the next boot repairs
 		// that. Until then the old policy stays in force.
-		a.log.Error("apply: log append failed", "version", ver, "err", err)
+		say(a.log, slog.LevelError, evLogAppend, "version", ver, "err", err)
 		a.reject(wire.ErrPersist, ver, hash, from)
 		return false
 	}
@@ -100,11 +120,15 @@ func (a *Agent) apply(env wire.Envelope, advisory uint64) bool {
 	next := state.Next(a.st8, state.Applied)
 	a.setPolicyLocked(v.Policy, hash, next)
 	a.lastErr = nil
+	if a.resetNote { // the control plane must see that the log was replaced
+		a.lastErr = &wire.ApplyError{Code: wire.ErrTampered, Version: ver}
+		a.resetNote = false
+	}
 	a.lastRej = rejKey{}
 	a.failures = 0
 	a.mu.Unlock()
 	a.stats.Inc(MetricApplyOK)
-	a.log.Info("policy applied", "version", ver, "state", string(next))
+	say(a.log, slog.LevelInfo, evApplied, "version", ver, "state", string(next))
 	a.wake(a.wakeEx)
 	a.wake(a.kick)
 	return true
@@ -123,10 +147,10 @@ func (a *Agent) reject(code wire.ErrorCode, to uint64, hash wire.Hash, from uint
 	a.lastRej = key
 	a.failures++
 	a.mu.Unlock()
-	a.log.Warn("envelope rejected", "code", string(code), "version", to)
-	if !dup && a.al != nil {
-		if _, err := a.al.Append(applylog.Entry{From: from, To: to, Hash: hash, Result: code}); err != nil {
-			a.log.Error("apply log: rejection not recorded", "err", err)
+	say(a.log, slog.LevelWarn, evRejected, "code", string(code), "version", to)
+	if al := a.alog(); !dup && al != nil {
+		if _, err := al.Append(applylog.Entry{From: from, To: to, Hash: hash, Result: code}); err != nil {
+			say(a.log, slog.LevelError, evRejectLost, "err", err)
 		}
 	}
 	a.wake(a.kick)
@@ -156,7 +180,7 @@ func (a *Agent) checkExpiry() {
 	a.view.active = act
 	a.st8 = next
 	a.stats.Inc(MetricExpired)
-	a.log.Warn("policy expired; safe mode", "version", a.view.version)
+	say(a.log, slog.LevelWarn, evExpired, "version", a.view.version)
 	a.wake(a.kick)
 }
 
@@ -190,8 +214,8 @@ func (a *Agent) Snapshot() Snapshot {
 	un, n := a.cfg.Guard.Untrusted(), a.cfg.Guard.UntrustedCount()
 	var seq uint64
 	var head wire.Hash
-	if a.al != nil {
-		seq, head = a.al.Head()
+	if al := a.alog(); al != nil {
+		seq, head = al.Head()
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -200,4 +224,29 @@ func (a *Agent) Snapshot() Snapshot {
 		s.PolicyHash = a.view.active.Hash
 	}
 	return s
+}
+
+// resetLog replaces the broken apply log (P-13, M-D64). The caller has
+// already seen the new policy pass trust.Accept against floor. The broken file
+// is renamed to <LogPath>.broken-<n>, never deleted, and a new chain starts
+// with a reset entry that records the old head, so Save and Append can go on.
+// It reports false (and the caller rejects with persist_failed) if the agent
+// has no log path or the reset fails; the policy in force does not change.
+func (a *Agent) resetLog(version, floor uint64) (*applylog.Log, bool) {
+	if a.cfg.LogPath == "" {
+		return nil, false
+	}
+	nl, ent, err := applylog.Reset(a.cfg.LogPath, a.clk, floor)
+	if err != nil {
+		say(a.log, slog.LevelError, evResetFailed, "version", version, "err", err)
+		return nil, false
+	}
+	a.al.Store(nl)
+	a.mu.Lock()
+	a.resetNote = true
+	a.mu.Unlock()
+	a.stats.Inc(MetricLogReset)
+	say(a.log, slog.LevelWarn, evLogReset, "version", version, "kept", ent.Reset.File,
+		"old_seq", ent.Reset.Seq, "reason", ent.Reset.Reason)
+	return nl, true
 }

@@ -78,6 +78,7 @@ var counterMetrics = []struct{ stat, name, help string }{
 	{agent.MetricStatusErrors, "kairan_proxy_status_errors_total", "Status reports that were not delivered."},
 	{agent.MetricExpired, "kairan_proxy_policy_expired_total", "Times the policy in force expired into safe mode."},
 	{agent.MetricBootTampered, "kairan_proxy_boot_tampered_total", "Boots that ended tampered."},
+	{agent.MetricLogReset, "kairan_proxy_apply_log_resets_total", "Broken apply logs kept aside and replaced by a new chain."},
 }
 
 // newLocalHandler returns the read-only handler. snap is read on every

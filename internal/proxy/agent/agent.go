@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"kairan/internal/clock"
@@ -38,6 +39,12 @@ type Config struct {
 	// verify. Pass a nil *applylog.Log with it: the proxy boots into Tampered
 	// and applies nothing (M-D33).
 	LogOpenErr error
+	// LogPath is the apply log file. With it, a broken log (LogOpenErr set,
+	// nil log) is replaced when a newer valid policy arrives: the broken file
+	// is kept as <LogPath>.broken-<n> and a new chain starts (P-13, M-D64).
+	// Without it a proxy with a broken log can never apply anything. The
+	// caller holds the data directory lock for the agent's whole life.
+	LogPath string
 }
 
 // Validate reports whether the config can be used. A bad trust root is an
@@ -74,7 +81,7 @@ func (c Config) Validate() error {
 type Agent struct {
 	cfg   Config
 	st    *store.Store
-	al    *applylog.Log // nil only with cfg.LogOpenErr set
+	al    atomic.Pointer[applylog.Log] // nil only with cfg.LogOpenErr set, until a reset replaces it
 	hold  *enforce.Holder
 	clk   clock.Clock
 	hc    *http.Client
@@ -90,14 +97,21 @@ type Agent struct {
 	kick   chan struct{} // send a status report now
 	wakeEx chan struct{} // expiry changed
 
-	mu        sync.Mutex
-	booted    bool
-	st8       wire.ProxyState
-	view      *enforceView // policy in force, nil if none
-	lastErr   *wire.ApplyError
-	seq       uint64
-	failures  int // consecutive poll failures, for backoff
-	lastRej   rejKey
+	mu       sync.Mutex
+	booted   bool
+	st8      wire.ProxyState
+	view     *enforceView // policy in force, nil if none
+	lastErr  *wire.ApplyError
+	seq      uint64
+	failures int // consecutive poll failures, for backoff
+	lastRej  rejKey
+	// brokenFloor is, while the apply log is broken, the highest version
+	// known to have been applied: the larger of the log's verifiable part and
+	// the stored policy that passed Verify. A recovery must beat it (I2).
+	brokenFloor uint64
+	// resetNote: a reset happened and no policy has been applied since; the
+	// next successful apply reports it in last_error (tampered).
+	resetNote bool
 	statusHld time.Duration // do not POST status before this Mono (Retry-After)
 }
 
@@ -140,8 +154,9 @@ func New(cfg Config, st *store.Store, al *applylog.Log, h *enforce.Holder, clk c
 	if stats == nil {
 		stats = &Stats{}
 	}
-	return &Agent{
-		cfg: cfg, st: st, al: al, hold: h, clk: clk, hc: hc, log: log, stats: stats,
+	cfg.Guard.SetLog(log)
+	a := &Agent{
+		cfg: cfg, st: st, hold: h, clk: clk, hc: hc, log: log, stats: stats,
 		pollTimeout:   wire.PollClientTimeout,
 		statusTimeout: statusTimeout,
 		jitter:        rand.Float64,
@@ -149,8 +164,15 @@ func New(cfg Config, st *store.Store, al *applylog.Log, h *enforce.Holder, clk c
 		kick:          make(chan struct{}, 1),
 		wakeEx:        make(chan struct{}, 1),
 		st8:           wire.StateBooting,
-	}, nil
+	}
+	if al != nil {
+		a.al.Store(al)
+	}
+	return a, nil
 }
+
+// alog is the apply log, nil while it is broken.
+func (a *Agent) alog() *applylog.Log { return a.al.Load() }
 
 // statusTimeout is the status POST deadline (M-D31).
 const statusTimeout = 10 * time.Second
@@ -182,19 +204,24 @@ func (a *Agent) Boot() error {
 	}
 	stored, _ := store.Inspect(a.st, verify)
 
+	al := a.alog()
 	lv := store.LogView{OpenErr: a.cfg.LogOpenErr}
-	if a.al != nil {
-		lv.Seq, _ = a.al.Head()
-		lv.AppliedVer, lv.AppliedHash = a.al.LastApplied()
+	if al != nil {
+		lv.Seq, _ = al.Head()
+		lv.AppliedVer, lv.AppliedHash = al.LastApplied()
+		lv.ResetPending = al.ResetPending()
+		a.resetNote = lv.ResetPending
+	} else if a.cfg.LogPath != "" {
+		a.brokenFloor = a.brokenFloorOf(stored)
 	}
 	dec := store.DecideBoot(stored, lv, now)
-	a.log.Info("boot", "reason", dec.Reason)
+	say(a.log, slog.LevelInfo, evBoot, "reason", dec.Reason)
 
 	ev := dec.Event
 	if dec.Repair {
-		if _, err := a.al.Append(applylog.Entry{From: lv.AppliedVer, To: stored.Checked.Version, Hash: stored.Checked.Hash}); err != nil {
+		if _, err := al.Append(applylog.Entry{From: lv.AppliedVer, To: stored.Checked.Version, Hash: stored.Checked.Hash}); err != nil {
 			// The log cannot record what is on disk: refuse to enforce it.
-			a.log.Error("boot: repair entry not written; staying tampered", "err", err)
+			say(a.log, slog.LevelError, evRepairNotWritten, "err", err)
 			ev = state.BootTampered
 		}
 	}
@@ -213,4 +240,19 @@ func (a *Agent) Boot() error {
 		a.stats.Inc(MetricBootTampered)
 	}
 	return nil
+}
+
+// brokenFloorOf is the highest version known applied when the apply log is
+// broken: what still verifies in the file, or the stored policy if it passed
+// Verify, whichever is larger. If the file cannot be read at all only the
+// stored policy counts.
+func (a *Agent) brokenFloorOf(stored store.Stored) uint64 {
+	var f uint64
+	if p, err := applylog.Inspect(a.cfg.LogPath); err == nil {
+		f = p.AppliedVersion
+	}
+	if stored.Found && stored.Err == nil {
+		f = max(f, stored.Checked.Version)
+	}
+	return f
 }

@@ -15,6 +15,14 @@ import (
 
 const maxCAFileBytes = 1 << 20
 
+// Errors of NewHTTPClient that a caller may tell apart (errors.Is) without
+// reading their text. None of them holds a path.
+var (
+	ErrNoPEM      = errors.New("agent: ca_file holds no PEM certificate")
+	ErrNotRegular = errors.New("agent: not a regular file")
+	ErrTooLarge   = errors.New("agent: file too large")
+)
+
 // NewHTTPClient builds the client the agent talks to the control plane with
 // (M-D31, PRD J2).
 //
@@ -40,7 +48,7 @@ func NewHTTPClient(caFile string) (*http.Client, error) {
 			pool = x509.NewCertPool()
 		}
 		if !pool.AppendCertsFromPEM(pem) {
-			return nil, errors.New("agent: ca_file holds no PEM certificate")
+			return nil, ErrNoPEM
 		}
 		cfg.RootCAs = pool
 	}
@@ -76,14 +84,14 @@ func readCAFile(path string) ([]byte, error) {
 		return nil, fmt.Errorf("agent: ca_file: %w", err)
 	}
 	if !fi.Mode().IsRegular() {
-		return nil, errors.New("agent: ca_file is not a regular file")
+		return nil, fmt.Errorf("agent: ca_file: %w", ErrNotRegular)
 	}
 	b, err := io.ReadAll(io.LimitReader(f, maxCAFileBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("agent: ca_file: %w", err)
 	}
 	if len(b) > maxCAFileBytes {
-		return nil, errors.New("agent: ca_file too large")
+		return nil, fmt.Errorf("agent: ca_file: %w", ErrTooLarge)
 	}
 	return b, nil
 }

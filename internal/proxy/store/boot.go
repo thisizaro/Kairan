@@ -59,6 +59,9 @@ type LogView struct {
 	Seq         uint64    // Head seq; 0 = empty log
 	AppliedVer  uint64    // LastApplied version; 0 = nothing applied
 	AppliedHash wire.Hash // LastApplied payload hash
+	// ResetPending: the chain starts with a reset entry and nothing has been
+	// applied on it (P-13). AppliedVer is then the floor carried over.
+	ResetPending bool
 }
 
 // BootDecision is the result of DecideBoot.
@@ -79,7 +82,11 @@ type BootDecision struct {
 // more than a verified, non-stale file:
 //
 //   - apply log does not open (including a truncated last line): Tampered.
-//     There is no auto-repair; an operator acts.
+//     There is no auto-repair of the file; a newer valid policy from the
+//     control plane or an import starts a new chain (P-13, agent.Apply).
+//   - apply log was reset and no policy has been applied on the new chain:
+//     Tampered. The log cannot vouch for what is on disk (a crash fell
+//     between the reset and the first apply).
 //   - file exists but cannot be loaded or fails verification: Tampered.
 //   - no file and nothing was ever applied: BootNoPolicy (deny-all).
 //   - no file but the log says a policy was applied: Tampered.
@@ -96,6 +103,8 @@ func DecideBoot(st Stored, lg LogView, now time.Time) BootDecision {
 	switch {
 	case lg.OpenErr != nil:
 		return tampered("apply log failed verification")
+	case lg.ResetPending:
+		return tampered("apply log was reset and no policy has been applied since")
 	case st.Err != nil:
 		return tampered("stored policy failed to load or verify")
 	case !st.Found:

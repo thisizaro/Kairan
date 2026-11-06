@@ -1,0 +1,32 @@
+# Prometheus for the Kairan compose demo (Q-01). Scrapes the control plane and all 10 real proxies.
+# One Prometheus for every tenant network is a demo shortcut (ARCHITECTURE section 1).
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+scrape_configs:
+  - job_name: kairan-cp
+    static_configs:
+      - targets: ["cp:9100"]
+        labels: {kind: real}
+  - job_name: kairan-proxy
+    static_configs:
+      - targets: ["bank-a-canary:9090"]
+        labels: {kind: real, tenant_net: bank-a, group: canary, instance_name: bank-a-canary}
+      - targets: ["bank-a-main-1:9090"]
+        labels: {kind: real, tenant_net: bank-a, group: main, instance_name: bank-a-main-1}
+      - targets: ["bank-a-main-2:9090"]
+        labels: {kind: real, tenant_net: bank-a, group: main, instance_name: bank-a-main-2}
+      - targets: ["bank-a-main-3:9090"]
+        labels: {kind: real, tenant_net: bank-a, group: main, instance_name: bank-a-main-3}
+      - targets: ["bank-a-main-4:9090"]
+        labels: {kind: real, tenant_net: bank-a, group: main, instance_name: bank-a-main-4}
+      - targets: ["bank-a-main-5:9090"]
+        labels: {kind: real, tenant_net: bank-a, group: main, instance_name: bank-a-main-5}
+      - targets: ["city-b-canary:9090"]
+        labels: {kind: real, tenant_net: city-b, group: canary, instance_name: city-b-canary}
+      - targets: ["city-b-main-1:9090"]
+        labels: {kind: real, tenant_net: city-b, group: main, instance_name: city-b-main-1}
+      - targets: ["city-b-main-2:9090"]
+        labels: {kind: real, tenant_net: city-b, group: main, instance_name: city-b-main-2}
+      - targets: ["city-b-main-3:9090"]
+        labels: {kind: real, tenant_net: city-b, group: main, instance_name: city-b-main-3}

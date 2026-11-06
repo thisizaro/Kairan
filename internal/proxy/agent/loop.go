@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"sync"
@@ -171,7 +172,7 @@ func (a *Agent) pollOnce(ctx context.Context) time.Duration {
 			return 0
 		}
 		a.stats.Inc(MetricPollErrors)
-		a.log.Warn("poll failed", "kind", errKind(err))
+		say(a.log, slog.LevelWarn, evPollFailed, "kind", errKind(err))
 		return a.backoff()
 	}
 	defer resp.Body.Close()
@@ -192,11 +193,11 @@ func (a *Agent) pollOnce(ctx context.Context) time.Duration {
 		return 0
 	case http.StatusServiceUnavailable:
 		a.stats.Inc(MetricPollErrors)
-		a.log.Warn("control plane unavailable")
+		say(a.log, slog.LevelWarn, evCPDown)
 		return a.retryAfterDelay(resp.Header)
 	default:
 		a.stats.Inc(MetricPollErrors)
-		a.log.Warn("poll refused", "http", resp.StatusCode, "code", string(readErrorCode(resp.Body)))
+		say(a.log, slog.LevelWarn, evPollRefuse, "http", resp.StatusCode, "code", string(readErrorCode(resp.Body)))
 		return a.backoff()
 	}
 }
@@ -208,11 +209,7 @@ func (a *Agent) pollOnce(ctx context.Context) time.Duration {
 func (a *Agent) onPollBody(body io.Reader) time.Duration {
 	version, env, err := decodePoll(body)
 	if err != nil {
-		var from uint64
-		if a.al != nil {
-			from, _ = a.al.LastApplied()
-		}
-		a.reject(wire.ErrMalformed, 0, "", from)
+		a.reject(wire.ErrMalformed, 0, "", a.lastApplied())
 		return a.rejectDelay()
 	}
 	if a.apply(env, version) {
@@ -260,8 +257,8 @@ func errKind(err error) string {
 func (a *Agent) report() wire.StatusReport {
 	var seq uint64
 	var head wire.Hash
-	if a.al != nil {
-		seq, head = a.al.Head()
+	if al := a.alog(); al != nil {
+		seq, head = al.Head()
 	}
 	untrusted := a.cfg.Guard.Untrusted()
 	a.mu.Lock()
@@ -306,7 +303,7 @@ func (a *Agent) sendStatus(ctx context.Context) {
 	rep := a.report()
 	if err := rep.Validate(); err != nil {
 		a.stats.Inc(MetricStatusErrors)
-		a.log.Error("status report invalid; not sent", "state", string(rep.State))
+		say(a.log, slog.LevelError, evStatusBad, "state", string(rep.State))
 		return
 	}
 	body, err := json.Marshal(rep)
@@ -327,7 +324,7 @@ func (a *Agent) sendStatus(ctx context.Context) {
 	if err != nil {
 		if ctx.Err() == nil {
 			a.stats.Inc(MetricStatusErrors)
-			a.log.Warn("status report failed", "kind", errKind(err))
+			say(a.log, slog.LevelWarn, evStatusFail, "kind", errKind(err))
 		}
 		return
 	}
@@ -347,6 +344,6 @@ func (a *Agent) sendStatus(ctx context.Context) {
 		a.mu.Unlock()
 	default:
 		a.stats.Inc(MetricStatusErrors)
-		a.log.Warn("status report refused", "http", resp.StatusCode)
+		say(a.log, slog.LevelWarn, evStatusNo, "http", resp.StatusCode)
 	}
 }
