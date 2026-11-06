@@ -668,8 +668,6 @@ loop:
 	}
 }
 
-func unusedMarker() {}
-
 func TestOpenKeepsUnrelatedFilesAndTheRealPolicy(t *testing.T) {
 	s, dir := openIn(t)
 	env := envOf([]byte(`{"v":1}`), 2)

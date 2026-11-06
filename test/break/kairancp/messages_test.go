@@ -414,7 +414,7 @@ func TestMsgHostileFieldNames(t *testing.T) {
 		"nul":         `a\u0000b`,
 		"C1 control":  `a\u009bb`,
 		"line sep":    `a b`,
-		"bidi":        `a‮b`,
+		"bidi":        "a\u202eb",
 		"lone surr.":  `\ud800x`,
 		"long 60 KiB": strings.Repeat("n", 60<<10),
 	}
