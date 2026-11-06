@@ -1079,3 +1079,91 @@ func TestTimelineResponseReportsDropped(t *testing.T) {
 		t.Fatalf("other tenant: %s", rec.Body)
 	}
 }
+
+// ---- publish rejections are counted (C-08, M-D64) ----
+
+func (e *testEnv) metrics() string {
+	e.t.Helper()
+	rec := httptest.NewRecorder()
+	e.reg.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/metrics", nil))
+	return rec.Body.String()
+}
+
+func TestPublishRejectionsAreCounted(t *testing.T) {
+	e := newEnv(t)
+	a, b := e.keys[0], e.keys[1]
+	pay := policyJSON(tenant, 5)
+	envJSON := string(mustJSON(t, signedEnv(pay, a, b)))
+	huge := []byte(`{"x":"` + strings.Repeat("a", wire.MaxEnvelopeBytes) + `"}`)
+	type rej struct {
+		name string
+		body []byte
+		line string // the series expected to count it
+	}
+	tests := []rej{
+		{"bad signature", mustJSON(t, signedEnv(pay, a, e.other)), `kairan_cp_publish_rejected_total{tenant="acme",code="threshold-not-met"}`},
+		{"one signature", mustJSON(t, signedEnv(pay, a)), `kairan_cp_publish_rejected_total{tenant="acme",code="threshold-not-met"}`},
+		{"tampered", mustJSON(t, func() wire.Envelope { x := signedEnv(pay, a, b); x.Payload = policyJSON(tenant, 6); return x }()), `kairan_cp_publish_rejected_total{tenant="acme",code="threshold-not-met"}`},
+		{"unenrolled tenant", mustJSON(t, signedEnv(policyJSON("nobody", 5), a, b)), `kairan_cp_publish_rejected_total{tenant="unknown",code="wrong-tenant"}`},
+		{"hostile tenant", mustJSON(t, signedEnv(policyJSON("Evil Tenant!", 5), a, b)), `kairan_cp_publish_rejected_total{tenant="unknown",code="malformed"}`},
+		{"malformed policy", mustJSON(t, signedEnv([]byte(`{"tenant":"acme"}`), a, b)), `kairan_cp_publish_rejected_total{tenant="unknown",code="malformed"}`},
+		{"payload type", mustJSON(t, func() wire.Envelope { x := signedEnv(pay, a, b); x.PayloadType = "text/plain"; return x }()), `kairan_cp_publish_rejected_total{tenant="unknown",code="payload-type"}`},
+		{"not json", []byte(`nope`), `kairan_cp_publish_rejected_total{tenant="unknown",code="bad-request"}`},
+		{"unknown field", []byte(strings.TrimSuffix(envJSON, "}") + `,"x":1}`), `kairan_cp_publish_rejected_total{tenant="unknown",code="bad-request"}`},
+		{"oversize", huge, `kairan_cp_publish_rejected_total{tenant="unknown",code="too-large"}`},
+	}
+	want := map[string]int{}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if rec := e.do("POST", wire.PathPolicies, adminTok, tc.body); rec.Code < 400 {
+				t.Fatalf("status %d, want a refusal", rec.Code)
+			}
+		})
+		want[tc.line]++
+	}
+	// Same version again: a conflict.
+	if rec := e.do("POST", wire.PathPolicies, adminTok, []byte(envJSON)); rec.Code != 200 {
+		t.Fatalf("good publish: %d %s", rec.Code, rec.Body)
+	}
+	if rec := e.do("POST", wire.PathPolicies, adminTok, []byte(envJSON)); rec.Code != 409 {
+		t.Fatalf("repeat publish: %d", rec.Code)
+	}
+	want[`kairan_cp_publish_rejected_total{tenant="acme",code="conflict"}`]++
+
+	out := e.metrics()
+	for line, n := range want {
+		if !strings.Contains(out, fmt.Sprintf("%s %d\n", line, n)) {
+			t.Errorf("metrics lack %q = %d:\n%s", line, n, out)
+		}
+	}
+	// Only the series above exist: attacker input cannot add labels.
+	got := 0
+	for _, l := range strings.Split(out, "\n") {
+		if strings.HasPrefix(l, "kairan_cp_publish_rejected_total{") {
+			got++
+		}
+	}
+	if got != len(want) {
+		t.Errorf("%d series, want %d:\n%s", got, len(want), out)
+	}
+	for _, leak := range []string{"Evil", "nobody", "SECRET"} {
+		if strings.Contains(out, leak) {
+			t.Errorf("metrics leak %q", leak)
+		}
+	}
+}
+
+func TestPublishAuthFailuresAndSuccessAreNotCountedAsRejected(t *testing.T) {
+	e := newEnv(t)
+	body := mustJSON(t, signedEnv(policyJSON(tenant, 5), e.keys[0], e.keys[1]))
+	e.do("POST", wire.PathPolicies, "", body)              // 401
+	e.do("POST", wire.PathPolicies, "wrong", body)         // 401
+	e.do("POST", wire.PathPolicies, tok("p-canary"), body) // 403
+	e.do("GET", wire.PathPolicies, adminTok, nil)          // 405
+	if rec := e.do("POST", wire.PathPolicies, adminTok, body); rec.Code != 200 {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	if out := e.metrics(); strings.Contains(out, "kairan_cp_publish_rejected_total{") {
+		t.Errorf("unexpected rejection series:\n%s", out)
+	}
+}
