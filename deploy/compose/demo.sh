@@ -206,7 +206,8 @@ demo() {
   echo
   echo "demo ok in $(($(now_s) - t0))s: 10 of 10 proxies on v1. These are 10 real kairan-proxy containers, none simulated."
   echo "デモ成功: 実プロキシ 10 台すべてが v1 を適用 (シミュレーションではありません)"
-  echo "fleet page:  $CP_HOST_URL/?tenant=bank-a   Prometheus: http://127.0.0.1:19090   Grafana: http://127.0.0.1:13000"
+  echo "fleet page:  $CP_HOST_URL/?tenant=bank-a&lang=en  (ja for Japanese; any user name, password = the admin token in $RUN/admin.token)"
+  echo "Prometheus:  http://127.0.0.1:19090   Grafana: http://127.0.0.1:13000 (dashboard 'Kairan fleet'; admin password in $RUN/grafana.env)"
   echo "stop with: deploy/compose/demo.sh down"
 }
 
